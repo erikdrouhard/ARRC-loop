@@ -119,6 +119,31 @@ It does not just score. It decides:
 
 It measures whether the output survives pressure before handoff.
 
+## Why The Verifier Matters
+
+The verifier is the fulcrum of ARC Judge.
+
+Generating rebuttals is comparatively easy.
+Deciding which rebuttals are actually decision-relevant is harder.
+
+If the verifier is weak, ARC Judge fails in one of two ways:
+
+- **gullible mode** — it caves to polished but weak criticism
+- **stubborn mode** — it ignores valid criticism and over-trusts the draft
+
+That means verifier quality matters more than rebuttal quantity.
+
+### Verifier strategies
+
+ARC Judge can support multiple verifier modes:
+
+- **same-model verifier** — cheap, fast, good for light ARC
+- **cross-model verifier** — better for adversarial independence
+- **tool-backed verifier** — best when external checks or ground truth exist
+- **ensemble verifier** — useful when the cost of error is high
+
+In practice, the verifier should be treated as a first-class subsystem, not just one box in the loop.
+
 ## When To Use ARC Judge
 
 Use ARC Judge when the cost of shipping a weak-but-plausible answer is meaningful.
@@ -155,6 +180,9 @@ Less useful for:
 | Decide hold/revise/narrow/escalate | Sometimes | ✅ |
 | Test persona/message stability across pushback | Limited | ✅ |
 | Gate schema handoff before generation | Limited | ✅ |
+
+ARC Judge is not a replacement for regular judges.
+It is the specialized judge you use when first-pass quality is not enough.
 
 ## Core Loop
 
@@ -233,7 +261,9 @@ npm install arc-judge
 
 ### Basic Usage
 
-The current package exposes this as the starter API contract. It is intentionally small, because whatever shows up here will anchor downstream expectations.
+> **Note**
+> This is a conceptual starter contract, not a finalized production API.
+> It is intentionally small and will evolve based on real traces, latency constraints, and verifier design.
 
 ```ts
 import { runARCJudge } from "arc-judge";
@@ -372,6 +402,38 @@ function shouldTriggerARC(ctx) {
 }
 ```
 
+## Latency Modes
+
+ARC Judge should not always run as a full multi-step loop.
+
+### Inline light ARC
+Use when:
+- low latency matters
+- risk is moderate
+- one-pass screening is enough
+
+Pattern:
+- draft
+- top rebuttal
+- quick verification
+- ship decision
+
+### Full synchronous ARC
+Use when:
+- the output may trigger action
+- the answer is expensive to get wrong
+- tool-backed or schema-backed execution is involved
+
+### Async shadow ARC
+Use when:
+- you want telemetry without blocking the user
+- you are tuning thresholds
+- you are collecting traces to improve verifier quality
+
+A practical rule:
+
+**Screen by default, stress-test selectively.**
+
 ## What ARC Judge Measures
 
 ARC Judge is about more than first-pass quality.
@@ -406,6 +468,26 @@ ARC Judge should:
 5. stop when stable enough for the stakes
 6. prefer calibrated convergence over endless debate
 
+## MVP Focus
+
+ARC Judge is a broad framework, but the first implementation should be narrow.
+
+Recommended first slice:
+
+- **Schema ARC Judge**
+- deterministic validator + lightweight rebuttal generator + verifier
+- one or two hand-crafted examples
+- trace-first development
+
+Why schema first?
+
+Because the boundary is clear:
+
+- validator asks: "Can this run?"
+- ARC Judge asks: "Should this run yet?"
+
+That makes schema mode a good proving ground before broader reasoning or persona modes.
+
 ## FAQ
 
 Why not just use a regular judge?  
@@ -420,8 +502,11 @@ No. Self-refine focuses on improving the artifact. ARC Judge focuses on whether 
 Should every response go through ARC Judge?  
 Usually at least a light screen. Not every response needs a deep loop.
 
-Does ARC Judge replace human review?  
+Does ARC Judge replace human review?
 No. It is a calibration layer, not a guarantee of truth.
+
+Why not make the verifier the judge?
+Because the jobs are different. The **verifier** decides whether criticism is actually valid. The **judge** decides what to do with that validated criticism. Keeping those roles separate makes the system easier to reason about, test, and swap by tier.
 
 ## Repo Structure
 
@@ -431,6 +516,7 @@ arc-judge/
 ├── docs/
 │   ├── concepts.md
 │   ├── judge-types.md
+│   ├── verifier.md
 │   ├── faq.md
 │   └── trigger-strategies.md
 ├── src/
@@ -470,6 +556,7 @@ The distinguishing idea is the synthesis:
 
 - [Concepts](./docs/concepts.md)
 - [Judge Types](./docs/judge-types.md)
+- [Verifier](./docs/verifier.md)
 - [FAQ](./docs/faq.md)
 - [Trigger Strategies](./docs/trigger-strategies.md)
 
