@@ -4,69 +4,164 @@ import type {
   ArcRiskTier,
   ArcRound,
   ArcTaskType,
+  ConvergenceState,
+  ValidatedChallenge,
+  VulnerabilityAssessment,
 } from "../types.js";
 
-function severityScore(rounds: ArcRound[]): number {
-  return rounds.flatMap((round) => round.accepted).reduce((total, challenge) => {
-    switch (challenge.severity) {
-      case "high":
-        return total + 3;
-      case "medium":
-        return total + 2;
-      case "low":
-        return total + 1;
-      default:
-        return total;
-    }
-  }, 0);
-}
+// ── Decision Logic ───────────────────────────────────────────────────────────
 
 function pickDecision(
   taskType: ArcTaskType,
   tier: ArcRiskTier,
   rounds: ArcRound[],
-  outputChanged: boolean,
+  convergence: ConvergenceState,
 ): ArcDecision {
-  const accepted = rounds.flatMap((round) => round.accepted);
-  const highSeverity = accepted.filter((challenge) => challenge.severity === "high").length;
+  const allAccepted = rounds.flatMap((r) => r.accepted);
+  const highSeverity = allAccepted.filter((c) => c.severity === "high");
+  const lastRound = rounds[rounds.length - 1];
+  const lastRoundAccepted = lastRound?.accepted ?? [];
+  const lastRoundChanged = lastRound ? !lastRound.revision.unchanged : false;
 
-  if (accepted.length === 0) {
+  // No verified challenges survived at all → approve
+  if (allAccepted.length === 0) {
     return "approve";
   }
 
-  if (highSeverity > 0 && (taskType === "schema" || taskType === "policy" || tier === 3)) {
+  // Oscillating → escalate
+  if (convergence.isOscillating) {
     return "escalate";
   }
 
-  if (highSeverity > 0 && !outputChanged) {
+  // Budget exceeded without stability → escalate
+  if (convergence.budgetExceeded && !convergence.isStable) {
+    return "escalate";
+  }
+
+  // High-severity challenges on high-stakes tasks → escalate
+  if (highSeverity.length > 0 && (taskType === "schema" || taskType === "policy" || tier === 3)) {
+    return "escalate";
+  }
+
+  // Multiple high-severity challenges that weren't addressed → reject
+  if (highSeverity.length >= 2 && !lastRoundChanged) {
     return "reject";
   }
 
-  if (outputChanged) {
+  // Stable: no new verified challenges on latest revision → narrow (revision was successful)
+  if (convergence.isStable && lastRoundChanged) {
+    return "narrow";
+  }
+
+  // Last round had no accepted challenges (even if earlier rounds did) → approve
+  if (lastRoundAccepted.length === 0) {
+    return "approve";
+  }
+
+  // Verified challenges exist but reviser couldn't address in-place → revise
+  if (!lastRoundChanged && allAccepted.length > 0) {
+    return "revise";
+  }
+
+  // Changes were made → narrow
+  if (lastRoundChanged) {
     return "narrow";
   }
 
   return "revise";
 }
 
-function calculateConfidence(decision: ArcDecision, rounds: ArcRound[]): number {
-  const score = severityScore(rounds);
+// ── Confidence Calculation ───────────────────────────────────────────────────
 
+function severityWeight(challenges: ValidatedChallenge[]): number {
+  return challenges.reduce((total, c) => {
+    switch (c.severity) {
+      case "high": return total + 3;
+      case "medium": return total + 2;
+      case "low": return total + 1;
+      default: return total;
+    }
+  }, 0);
+}
+
+function calculateConfidence(
+  decision: ArcDecision,
+  rounds: ArcRound[],
+  convergence: ConvergenceState,
+): number {
+  const allAccepted = rounds.flatMap((r) => r.accepted);
+  const weight = severityWeight(allAccepted);
+
+  let base: number;
   switch (decision) {
     case "approve":
-      return 0.9;
+      base = 0.92;
+      break;
     case "narrow":
-      return Math.max(0.62, 0.88 - score * 0.04);
+      base = 0.82;
+      break;
     case "revise":
-      return Math.max(0.3, 0.68 - score * 0.05);
+      base = 0.6;
+      break;
     case "escalate":
-      return Math.max(0.25, 0.6 - score * 0.04);
+      base = 0.5;
+      break;
     case "reject":
-      return Math.max(0.2, 0.55 - score * 0.04);
+      base = 0.45;
+      break;
     default:
-      return 0.5;
+      base = 0.5;
   }
+
+  // Deduct for severity
+  const severityPenalty = weight * 0.03;
+
+  // Bonus for convergence (draft stabilized)
+  const convergenceBonus = convergence.isStable ? 0.05 : 0;
+
+  // Penalty for oscillation
+  const oscillationPenalty = convergence.isOscillating ? 0.1 : 0;
+
+  return Math.max(0.15, Math.min(0.98, base - severityPenalty + convergenceBonus - oscillationPenalty));
 }
+
+// ── Reason Generation ────────────────────────────────────────────────────────
+
+function generateReasons(
+  decision: ArcDecision,
+  rounds: ArcRound[],
+  convergence: ConvergenceState,
+): string[] {
+  const allAccepted = rounds.flatMap((r) => r.accepted);
+  const reasons: string[] = [];
+
+  if (allAccepted.length === 0) {
+    reasons.push("No challenges survived verification. Draft is durable at the current risk tier.");
+    return reasons;
+  }
+
+  for (const challenge of allAccepted) {
+    reasons.push(
+      `Verified ${challenge.category} challenge (${challenge.severity}): ${challenge.counterargument.slice(0, 80)}`,
+    );
+  }
+
+  if (convergence.isOscillating) {
+    reasons.push("Draft oscillated between states — revision introduced issues that were previously resolved.");
+  }
+
+  if (convergence.budgetExceeded) {
+    reasons.push(`Budget exceeded after ${convergence.roundsCompleted} rounds without full convergence.`);
+  }
+
+  if (convergence.isStable && decision === "narrow") {
+    reasons.push("Draft converged: latest revision produced no new verified challenges.");
+  }
+
+  return reasons;
+}
+
+// ── Public API ───────────────────────────────────────────────────────────────
 
 export function judgeARC(options: {
   originalDraft: string;
@@ -74,42 +169,33 @@ export function judgeARC(options: {
   taskType: ArcTaskType;
   tier: ArcRiskTier;
   rounds: ArcRound[];
+  convergence: ConvergenceState;
+  vulnerabilityAssessment: VulnerabilityAssessment;
 }): ArcJudgment {
-  const { originalDraft, currentDraft, taskType, tier, rounds } = options;
-  const acceptedRebuttals = rounds.flatMap((round) => round.accepted.map((item) => item.title));
-  const rejectedRebuttals = rounds.flatMap((round) => round.rejected.map((item) => item.title));
-  const revisionTargets = rounds.flatMap((round) => round.revision.revisionTargets);
-  const notes = rounds.flatMap((round) => round.revision.notes);
-  const outputChanged = currentDraft !== originalDraft;
-  const decision = pickDecision(taskType, tier, rounds, outputChanged);
-  const confidence = calculateConfidence(decision, rounds);
+  const { currentDraft, taskType, tier, rounds, convergence, vulnerabilityAssessment } = options;
 
-  const reasons =
-    acceptedRebuttals.length === 0
-      ? ["No material rebuttal survived validation at the current ARC tier."]
-      : acceptedRebuttals.map((title) => `Accepted rebuttal: ${title}`);
+  const allAccepted = rounds.flatMap((r) => r.accepted);
+  const allRejected = rounds.flatMap((r) => r.rejected);
+
+  const decision = pickDecision(taskType, tier, rounds, convergence);
+  const confidence = calculateConfidence(decision, rounds, convergence);
+  const reasons = generateReasons(decision, rounds, convergence);
 
   const judgment: ArcJudgment = {
     decision,
     confidence,
     reasons,
-    acceptedRebuttals,
-    rejectedRebuttals,
+    acceptedChallenges: allAccepted,
+    rejectedChallenges: allRejected,
     rounds,
     tier,
+    convergence,
+    vulnerabilityAssessment,
     shouldShip: decision === "approve" || decision === "narrow",
   };
 
   if (decision !== "reject") {
     judgment.output = currentDraft;
-  }
-
-  if (revisionTargets.length > 0) {
-    judgment.revisionTargets = revisionTargets;
-  }
-
-  if (notes.length > 0) {
-    judgment.notes = notes;
   }
 
   return judgment;
