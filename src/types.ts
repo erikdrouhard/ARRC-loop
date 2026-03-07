@@ -1,11 +1,16 @@
-export type ArcDecision =
+// ARRC Loop — Adversarial Rebuttal Relay Convergence
+// Core invariant: Stability without adequate challenge coverage is not convergence.
+
+// --- Decisions & Classifications ---
+
+export type ArrcDecision =
   | "approve"
   | "revise"
   | "narrow"
   | "escalate"
   | "reject";
 
-export type ArcTaskType =
+export type ArrcTaskType =
   | "general"
   | "reasoning"
   | "persona"
@@ -13,22 +18,20 @@ export type ArcTaskType =
   | "schema"
   | "support";
 
-export type ArcRiskTier = 0 | 1 | 2 | 3;
+export type ArrcRiskTier = 0 | 1 | 2 | 3;
 
-export type ArcChallengeCategory =
-  | "overconfidence"
-  | "missing-evidence"
-  | "unsupported-assumption"
-  | "instruction-coverage"
-  | "tool-mismatch"
-  | "persona-drift"
-  | "policy-drift"
-  | "schema-brittleness"
-  | "ambiguity";
+export type ArrcChallengeCategory =
+  | "factual"
+  | "logical"
+  | "schema"
+  | "persona"
+  | "policy";
 
-export type ArcChallengeSeverity = "low" | "medium" | "high";
+export type ArrcChallengeSeverity = "low" | "medium" | "high";
 
-export interface ArcTriggerContext {
+// --- Trigger Context ---
+
+export interface ArrcTriggerContext {
   usedTools?: boolean;
   lowConfidence?: boolean;
   agentDisagreement?: boolean;
@@ -38,57 +41,144 @@ export interface ArcTriggerContext {
   userRequestedVerification?: boolean;
 }
 
-export interface ArcJudgeInput {
+// --- Input ---
+
+export interface ArrcInput {
   draft: string;
-  taskType?: ArcTaskType;
+  taskType?: ArrcTaskType;
   taskDescription?: string;
   context?: string;
   rubric?: string[];
-  metadata?: ArcTriggerContext;
+  metadata?: ArrcTriggerContext;
   maxRounds?: number;
 }
 
-export interface ArcChallenge {
+// --- Spans ---
+
+export interface DraftSpan {
+  text: string;
+  start: number;
+  end: number;
+}
+
+// --- Classifier ---
+
+export interface VulnerabilityAssessment {
+  score: number;
+  flaggedDimensions: ArrcChallengeCategory[];
+  recommendedTier: ArrcRiskTier;
+  reasons: string[];
+}
+
+// --- Challenger ---
+
+export interface StructuredChallenge {
   id: string;
-  title: string;
-  category: ArcChallengeCategory;
-  severity: ArcChallengeSeverity;
-  critique: string;
-  target: string;
+  issueKey: string;
+  category: ArrcChallengeCategory;
+  severity: ArrcChallengeSeverity;
+  target: DraftSpan;
+  counterargument: string;
+  failureScenario: string;
   signal: number;
 }
 
-export interface ArcValidatedChallenge extends ArcChallenge {
+// --- Relay ---
+
+export type RelayMode = "auto" | "manual";
+
+export interface RelayPayload {
+  issueKey: string;
+  category: ArrcChallengeCategory;
+  target: DraftSpan;
+  counterargument: string;
+  failureScenario: string;
+}
+
+export interface RelayContext {
+  relayMode: RelayMode;
+  identityMasked: boolean;
+  normalizedFields: Array<"target" | "counterargument" | "failureScenario">;
+  lineagePreserved: boolean;
+}
+
+export interface RelayResult {
+  payload: RelayPayload;
+  context: RelayContext;
+  notes?: string[];
+}
+
+// --- Verifier ---
+
+export interface VerificationResult {
   accepted: boolean;
+  confidence: number;
   rationale: string;
+  evidence?: string;
+  abstained?: boolean;
 }
 
-export interface ArcRevision {
+export interface VerificationStrategy {
+  verify(
+    challenge: StructuredChallenge,
+    draft: string,
+    context: ArrcInput,
+  ): VerificationResult;
+}
+
+// --- Reviser ---
+
+export interface ScopedRevision {
   output: string;
-  revisionTargets: string[];
-  notes: string[];
-  changed: boolean;
+  changes: Array<{
+    issueKey: string;
+    originalSpan: DraftSpan;
+    revisedSpan: DraftSpan;
+    reason: string;
+  }>;
+  unchanged: boolean;
+  unresolvable: string[];
 }
 
-export interface ArcRound {
+// --- Coverage ---
+
+export interface ChallengeCoverage {
+  dimensionsAttempted: ArrcChallengeCategory[];
+  dimensionsAbstained: ArrcChallengeCategory[];
+  admissibleChallengesProduced: number;
+  verifiedChallengesProduced: number;
+  coverageAdequate: boolean;
+  coverageNotes: string[];
+}
+
+// --- Convergence ---
+
+export interface ConvergenceState {
+  isStable: boolean;
+  isOscillating: boolean;
+  budgetExceeded: boolean;
+  roundsCompleted: number;
+}
+
+// --- Round ---
+
+export interface ArrcRound {
   round: number;
-  draft: string;
-  challenges: ArcChallenge[];
-  accepted: ArcValidatedChallenge[];
-  rejected: ArcValidatedChallenge[];
-  revision: ArcRevision;
+  challenges: StructuredChallenge[];
+  verifications: VerificationResult[];
+  revision?: ScopedRevision;
 }
 
-export interface ArcJudgment {
-  decision: ArcDecision;
+// --- Result ---
+
+export interface ArrcResult {
+  decision: ArrcDecision;
   confidence: number;
   output?: string;
   reasons: string[];
-  acceptedRebuttals: string[];
-  rejectedRebuttals: string[];
-  revisionTargets?: string[];
-  notes?: string[];
-  rounds: ArcRound[];
-  tier: ArcRiskTier;
+  rounds: ArrcRound[];
+  tier: ArrcRiskTier;
+  convergence: ConvergenceState;
+  coverage: ChallengeCoverage;
   shouldShip: boolean;
 }

@@ -1,6 +1,6 @@
-import { runARCJudge } from "../../src/index.js";
+import { runARRC } from "../../src/index.js";
 
-const result = await runARCJudge({
+const result = runARRC({
   draft: "Return an object for the form submission with whatever fields seem useful.",
   taskType: "schema",
   metadata: {
@@ -8,4 +8,4 @@ const result = await runARCJudge({
   },
 });
 
-console.log(result);
+console.log(JSON.stringify(result, null, 2));

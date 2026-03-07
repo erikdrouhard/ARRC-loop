@@ -1,7 +1,7 @@
 {
-  "name": "arc-judge",
-  "version": "0.1.0",
-  "description": "Adversarial Rebuttal Calibration for LLM outputs, agents, and schemas",
+  "name": "arrc-loop",
+  "version": "0.2.0",
+  "description": "Adversarial Rebuttal Relay Convergence — relay-mediated convergence protocol for LLM outputs, agents, and schemas",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -27,8 +27,9 @@
   },
   "keywords": [
     "llm",
-    "judge",
-    "evaluation",
+    "arrc",
+    "convergence",
+    "relay",
     "agents",
     "schema",
     "typescript"
