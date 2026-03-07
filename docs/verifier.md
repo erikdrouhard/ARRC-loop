@@ -1,6 +1,6 @@
 # Verifier
 
-The verifier determines whether a rebuttal should change the ship decision.
+The verifier determines whether a challenge should change the ship decision.
 
 ## Purpose
 
@@ -33,13 +33,23 @@ Symptoms:
 - overconfidence
 - low correction rate
 
-## Verifier modes
+## Verifier strategies
+
+ARRC Loop v1 implements dimension-specific verification strategies:
+
+- **Factual**: checks evidence markers around the target span; accepts challenges to ungrounded absolutes
+- **Logical**: detects single-reason justifications and tests for causal gaps
+- **Schema**: validates whether an adversarial input could break the schema
+- **Persona**: checks explicit trait definitions and boundary constraints
+- **Policy**: inspects allow/deny/escalate boundaries and flags vague language
+
+## Future verifier modes
 
 ### Same-model verifier
 Best for:
 - low latency
 - low stakes
-- light ARC
+- light screening
 
 ### Cross-model verifier
 Best for:
@@ -64,9 +74,8 @@ Best for:
 
 A verifier should return:
 
-- verdict
-- confidence
-- rationale
-- evidence
-- whether revision is required
-- whether escalation is required
+- `accepted`: whether the challenge is valid
+- `confidence`: how certain the verifier is
+- `rationale`: why the verdict was reached
+- `evidence`: supporting detail (optional)
+- `abstained`: whether the verifier declined to judge (optional)
