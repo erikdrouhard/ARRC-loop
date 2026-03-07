@@ -1,6 +1,6 @@
 # Trigger Strategies
 
-Not every output needs the same amount of ARC pressure. A useful system decides how much scrutiny to apply before paying the cost of deeper loops.
+Not every output needs the same amount of challenge pressure. The tier system decides how much scrutiny to apply before paying the cost of deeper loops.
 
 ## Tier 0: Bypass
 
@@ -12,9 +12,9 @@ Examples:
 - tiny formatting changes
 - low-cost rewrites
 
-## Tier 1: Light ARC
+## Tier 1: Light Screen
 
-Use as the default screen for many user-visible outputs.
+Use as the default screen for many user-visible outputs. One pass.
 
 Checks:
 
@@ -25,7 +25,7 @@ Checks:
 - policy drift
 - obvious overconfidence
 
-## Tier 2: Deep ARC
+## Tier 2: Standard Loop
 
 Use when the answer has more ways to fail.
 
@@ -38,9 +38,11 @@ Triggers:
 - constraints are numerous
 - stakes are meaningful
 
-## Tier 3: Full ARC Loop
+## Tier 3: Deep Loop
 
-Use when the cost of a bad handoff is high.
+Use when the cost of a bad handoff is high. Broader challenge coverage, stricter escalation sensitivity.
+
+Tier 3 does **not** lower proof standards. It increases challenge breadth and escalation sensitivity.
 
 Triggers:
 
@@ -53,17 +55,17 @@ Triggers:
 ## Reference Hook
 
 ```ts
-import { selectARCTier } from "arc-judge";
+import { selectArrcTier } from "arrc-loop";
 
-const tier = selectARCTier({
+const tier = selectArrcTier({
   usedTools: true,
   highStakes: true,
   userRequestedVerification: true,
 });
 ```
 
-The tier should shape:
+The tier shapes:
 
-- how many challenges to generate
-- whether to do more than one round
-- whether a failing judgment should revise, narrow, or escalate
+- how many challenge dimensions are explored
+- how many rounds the loop runs
+- whether a stable-but-weakly-covered result escalates or approves
