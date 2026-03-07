@@ -1,6 +1,6 @@
-import { runARCJudge } from "../../src/index.js";
+import { runARRC } from "../../src/index.js";
 
-const result = await runARCJudge({
+const result = runARRC({
   draft: "I can answer as the brand voice, but the persona constraints are not written down yet.",
   taskType: "persona",
   metadata: {
@@ -8,4 +8,4 @@ const result = await runARCJudge({
   },
 });
 
-console.log(result);
+console.log(JSON.stringify(result, null, 2));

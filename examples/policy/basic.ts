@@ -1,6 +1,6 @@
-import { runARCJudge } from "../../src/index.js";
+import { runARRC } from "../../src/index.js";
 
-const result = await runARCJudge({
+const result = runARRC({
   draft: "We should help where we can.",
   taskType: "policy",
   metadata: {
@@ -9,4 +9,4 @@ const result = await runARCJudge({
   },
 });
 
-console.log(result);
+console.log(JSON.stringify(result, null, 2));

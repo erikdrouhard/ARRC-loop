@@ -1,6 +1,11 @@
-import type { ArcRevision, ArcValidatedChallenge } from "../types.js";
+import type {
+  DraftSpan,
+  ScopedRevision,
+  StructuredChallenge,
+  VerificationResult,
+} from "../types.js";
 
-const ABSOLUTE_REPLACEMENTS: Array<[RegExp, string]> = [
+const ABSOLUTE_REPLACEMENTS: ReadonlyArray<[RegExp, string]> = [
   [/\balways\b/gi, "usually"],
   [/\bnever\b/gi, "rarely"],
   [/\bguaranteed?\b/gi, "likely"],
@@ -11,97 +16,167 @@ const ABSOLUTE_REPLACEMENTS: Array<[RegExp, string]> = [
   [/\bmust\b/gi, "should"],
 ];
 
-function softenAbsoluteClaims(draft: string): string {
-  return ABSOLUTE_REPLACEMENTS.reduce(
-    (current, [pattern, replacement]) => current.replace(pattern, replacement),
-    draft,
-  );
+/**
+ * Apply scoped repair to the targeted span only.
+ * Preserves untouched regions exactly.
+ *
+ * Local-contract rule: the reviser must not emit partial or "good enough" fixes
+ * assuming downstream modules will catch the leftover defect.
+ */
+function reviseSpan(
+  draft: string,
+  span: DraftSpan,
+  category: string,
+): { revisedText: string; reason: string } | null {
+  const targetText = draft.slice(span.start, span.end);
+
+  // Verify span still matches
+  if (targetText !== span.text) {
+    return null;
+  }
+
+  switch (category) {
+    case "factual": {
+      // Soften absolute claims within the targeted span only
+      let revised = span.text;
+      for (const [pattern, replacement] of ABSOLUTE_REPLACEMENTS) {
+        revised = revised.replace(pattern, replacement);
+      }
+      if (revised === span.text) {
+        return null;
+      }
+      return {
+        revisedText: revised,
+        reason: "Softened absolute language to reflect defensible confidence within targeted span.",
+      };
+    }
+
+    case "logical": {
+      // For logical gaps, qualify the conclusion
+      let revised = span.text;
+      // Only soften if there's a single-reason "because" pattern
+      if (/\b(is|are)\s+\w+\s+because\b/i.test(revised)) {
+        revised = revised.replace(
+          /\b(is|are)\s+(\w+)\s+because\b/i,
+          (match, verb, adj) => `${verb} partially ${adj} because`,
+        );
+      }
+      for (const [pattern, replacement] of ABSOLUTE_REPLACEMENTS) {
+        revised = revised.replace(pattern, replacement);
+      }
+      if (revised === span.text) {
+        return null;
+      }
+      return {
+        revisedText: revised,
+        reason: "Qualified inferential conclusion to acknowledge gap between premise and conclusion.",
+      };
+    }
+
+    case "schema": {
+      // Cannot do safe local text repair for schema gaps — report as unresolvable
+      return null;
+    }
+
+    case "persona": {
+      // Cannot do safe local text repair for missing persona traits — report as unresolvable
+      return null;
+    }
+
+    case "policy": {
+      // Qualify vague policy language within the span
+      let revised = span.text;
+      revised = revised.replace(
+        /\b(may be|in some cases|special cases|when appropriate)\b/gi,
+        (match) => `${match} (criteria to be specified)`,
+      );
+      if (revised === span.text) {
+        return null;
+      }
+      return {
+        revisedText: revised,
+        reason: "Marked vague policy boundary for explicit criteria specification.",
+      };
+    }
+
+    default:
+      return null;
+  }
 }
 
-function appendSection(draft: string, title: string, lines: string[]): string {
-  return `${draft.trim()}\n\n${title}\n${lines.map((line) => `- ${line}`).join("\n")}`;
-}
-
+/**
+ * Revise a draft based on verified challenges.
+ *
+ * Only verified challenges trigger revision.
+ * Revision is scoped to challenged spans only.
+ * Untouched regions are preserved exactly.
+ *
+ * Local-contract rule: the reviser must not emit partial or "good enough" fixes
+ * assuming downstream modules will catch the leftover defect.
+ * If local repair is not possible, report it in unresolvable.
+ */
 export function reviseDraft(
   draft: string,
-  acceptedChallenges: ArcValidatedChallenge[],
-): ArcRevision {
-  let nextDraft = draft;
-  const revisionTargets: string[] = [];
-  const notes: string[] = [];
+  challenges: StructuredChallenge[],
+  verifications: VerificationResult[],
+): ScopedRevision {
+  const changes: ScopedRevision["changes"] = [];
+  const unresolvable: string[] = [];
+  let currentDraft = draft;
 
-  for (const challenge of acceptedChallenges) {
-    revisionTargets.push(challenge.target);
+  // Track offset adjustments as we modify the draft
+  let offset = 0;
 
-    switch (challenge.category) {
-      case "overconfidence": {
-        const softened = softenAbsoluteClaims(nextDraft);
-        if (softened !== nextDraft) {
-          nextDraft = softened;
-          notes.push("Softened certainty language to reflect defendable confidence.");
-        }
-        break;
-      }
-      case "missing-evidence":
-        nextDraft = appendSection(nextDraft, "Evidence Needed Before Shipping", [
-          "Link the key claim to a source, tool result, or explicit reasoning step.",
-          "Separate what is known from what is inferred.",
-        ]);
-        notes.push("Marked evidence gaps instead of pretending the current draft is fully grounded.");
-        break;
-      case "unsupported-assumption":
-        nextDraft = appendSection(nextDraft, "Assumptions To Expose", [
-          "List the assumptions that would have to hold for this answer to remain correct.",
-        ]);
-        notes.push("Surfaced assumptions that could flip the decision under challenge.");
-        break;
-      case "instruction-coverage":
-        nextDraft = appendSection(nextDraft, "Rubric Gaps", [
-          "Address any missing required items before handoff.",
-        ]);
-        notes.push("Called out missing rubric coverage.");
-        break;
-      case "tool-mismatch":
-        nextDraft = appendSection(nextDraft, "Tooling Check", [
-          "Confirm that the draft matches the actual tool outputs and not a guessed result.",
-        ]);
-        notes.push("Flagged a tool-to-answer alignment risk.");
-        break;
-      case "persona-drift":
-        nextDraft = appendSection(nextDraft, "Persona Guardrails", [
-          "State the persona voice, non-negotiable boundaries, and what should not drift over follow-up turns.",
-        ]);
-        notes.push("Added explicit persona guardrails.");
-        break;
-      case "policy-drift":
-        nextDraft = appendSection(nextDraft, "Policy Guardrails", [
-          "State what is allowed, what is not allowed, and when to escalate instead of improvising.",
-        ]);
-        notes.push("Added explicit policy boundaries.");
-        break;
-      case "schema-brittleness":
-        nextDraft = appendSection(nextDraft, "Schema Hardening", [
-          "Define field types and required keys.",
-          "Constrain values that should not be left open-ended.",
-          "Document failure handling for invalid or partial input.",
-        ]);
-        notes.push("Added schema hardening guidance before downstream generation.");
-        break;
-      case "ambiguity":
-        nextDraft = appendSection(nextDraft, "Precision Fixes", [
-          "Replace vague referents with concrete nouns where the claim needs to hold under challenge.",
-        ]);
-        notes.push("Marked ambiguous wording that weakens rebuttal resistance.");
-        break;
-      default:
-        break;
+  // Only process verified (accepted) challenges
+  const verifiedPairs = challenges
+    .map((challenge, i) => ({ challenge, verification: verifications[i] }))
+    .filter((pair) => pair.verification?.accepted === true)
+    // Sort by start position to apply changes in order
+    .sort((a, b) => a.challenge.target.start - b.challenge.target.start);
+
+  for (const { challenge } of verifiedPairs) {
+    const adjustedStart = challenge.target.start + offset;
+    const adjustedEnd = challenge.target.end + offset;
+
+    const adjustedSpan: DraftSpan = {
+      text: challenge.target.text,
+      start: adjustedStart,
+      end: adjustedEnd,
+    };
+
+    const result = reviseSpan(currentDraft, adjustedSpan, challenge.category);
+
+    if (result) {
+      // Apply the revision
+      currentDraft =
+        currentDraft.slice(0, adjustedStart) +
+        result.revisedText +
+        currentDraft.slice(adjustedEnd);
+
+      const revisedSpan: DraftSpan = {
+        text: result.revisedText,
+        start: adjustedStart,
+        end: adjustedStart + result.revisedText.length,
+      };
+
+      changes.push({
+        issueKey: challenge.issueKey,
+        originalSpan: challenge.target,
+        revisedSpan,
+        reason: result.reason,
+      });
+
+      // Update offset for subsequent changes
+      offset += result.revisedText.length - challenge.target.text.length;
+    } else {
+      unresolvable.push(challenge.issueKey);
     }
   }
 
   return {
-    output: nextDraft,
-    revisionTargets,
-    notes,
-    changed: nextDraft !== draft,
+    output: currentDraft,
+    changes,
+    unchanged: currentDraft === draft,
+    unresolvable,
   };
 }
