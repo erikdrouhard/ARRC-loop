@@ -1,15 +1,13 @@
-import type {
-  ArrcChallengeCategory,
-  ArrcInput,
-  StructuredChallenge,
-} from "../types.js";
+import type { ArrcChallengeCategory, ArrcInput } from "../types.js";
 import { generateFactualChallenges } from "./factual.js";
 import { generateLogicalChallenges } from "./logical.js";
 import { generatePersonaChallenges } from "./persona.js";
 import { generatePolicyChallenges } from "./policy.js";
 import { generateSchemaChallenges } from "./schema.js";
+import type { PreRelayChallenge, RawChallenge } from "./util.js";
+import { toPreRelayChallenge } from "./util.js";
 
-type ChallengerFn = (draft: string, input: ArrcInput) => StructuredChallenge[];
+type ChallengerFn = (draft: string, input: ArrcInput) => RawChallenge[];
 
 const CHALLENGERS: Record<ArrcChallengeCategory, ChallengerFn> = {
   factual: generateFactualChallenges,
@@ -24,38 +22,30 @@ const CHALLENGERS: Record<ArrcChallengeCategory, ChallengerFn> = {
  *
  * Precision > recall. If no concrete challenge can be produced for a dimension,
  * that dimension is reported as abstained rather than faked.
- *
- * Local-contract rule: the challenger must not emit low-quality or speculative
- * challenges assuming the verifier will clean them up.
  */
 export function generateChallenges(
   draft: string,
   input: ArrcInput,
   flaggedDimensions: ArrcChallengeCategory[],
 ): {
-  challenges: StructuredChallenge[];
+  challenges: PreRelayChallenge[];
   abstainedDimensions: ArrcChallengeCategory[];
 } {
-  const challenges: StructuredChallenge[] = [];
+  const challenges: PreRelayChallenge[] = [];
   const abstainedDimensions: ArrcChallengeCategory[] = [];
 
   for (const dimension of flaggedDimensions) {
     const challenger = CHALLENGERS[dimension];
-    const dimensionChallenges = challenger(draft, input);
+    const raw = challenger(draft, input);
 
-    if (dimensionChallenges.length === 0) {
-      // Empty is better than fake.
+    if (raw.length === 0) {
       abstainedDimensions.push(dimension);
     } else {
-      challenges.push(...dimensionChallenges);
+      for (const r of raw) {
+        challenges.push(toPreRelayChallenge(r));
+      }
     }
   }
 
   return { challenges, abstainedDimensions };
 }
-
-export { generateFactualChallenges } from "./factual.js";
-export { generateLogicalChallenges } from "./logical.js";
-export { generatePersonaChallenges } from "./persona.js";
-export { generatePolicyChallenges } from "./policy.js";
-export { generateSchemaChallenges } from "./schema.js";

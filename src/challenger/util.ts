@@ -1,76 +1,62 @@
-import type { DraftSpan, StructuredChallenge } from "../types.js";
+import type { ArrcChallengeCategory, ArrcChallengeSeverity, DraftSpan, RelayedChallenge } from "../types.js";
+import { canonicalize, fingerprint as fp, lineageToken } from "../util.js";
+
+export { findSpan, splitSentences } from "../util.js";
+
+export interface RawChallenge {
+  category: ArrcChallengeCategory;
+  subtype: string;
+  severity: ArrcChallengeSeverity;
+  target: DraftSpan;
+  counterargument: string;
+  failureScenario: string;
+  signal: number;
+}
 
 /**
- * Find the span of a substring within a draft.
- * Returns null if the text is not found in the draft.
+ * Validate that a raw challenge meets admissibility requirements.
  */
-export function findSpan(draft: string, text: string): DraftSpan | null {
-  const start = draft.indexOf(text);
-  if (start === -1) return null;
+export function isAdmissible(c: RawChallenge): boolean {
+  if (!c.target.text || c.target.text.trim().length === 0) return false;
+  if (!c.counterargument || c.counterargument.trim().length < 20) return false;
+  if (!c.failureScenario || c.failureScenario.trim().length < 20) return false;
+  return true;
+}
 
+/**
+ * Build an issue key from category, subtype, and fingerprint.
+ */
+export function makeIssueKey(category: string, subtype: string, targetText: string): string {
+  return `${category}:${subtype}:${fp(category, subtype, targetText)}`;
+}
+
+/**
+ * Convert a raw challenge to the pre-relay format used by the challenger dispatcher.
+ * The relay module will then process this into a RelayedChallenge.
+ */
+export function toPreRelayChallenge(c: RawChallenge): PreRelayChallenge {
+  const key = makeIssueKey(c.category, c.subtype, c.target.text);
   return {
-    text,
-    start,
-    end: start + text.length,
+    issueKey: key,
+    category: c.category,
+    subtype: c.subtype,
+    severity: c.severity,
+    target: c.target,
+    counterargument: c.counterargument,
+    failureScenario: c.failureScenario,
+    signal: c.signal,
+    fingerprint: fp(c.category, c.subtype, c.target.text),
   };
 }
 
-/**
- * Generate a stable ID for a challenge based on category and target span.
- */
-export function makeId(prefix: string, span: DraftSpan): string {
-  return `${prefix}:${span.start}-${span.end}`;
-}
-
-/**
- * Validate that a challenge meets admissibility requirements.
- *
- * A challenge is admissible only if:
- * - target points to actual draft text (non-empty span)
- * - counterargument is specific (not filler)
- * - failureScenario is concrete (not filler)
- * - issueKey is present
- *
- * Auto-rejects filler like "this seems wrong", "this could be better", etc.
- */
-export function isAdmissible(challenge: StructuredChallenge): boolean {
-  // Target must have non-empty text
-  if (!challenge.target.text || challenge.target.text.trim().length === 0) {
-    return false;
-  }
-
-  // issueKey must be present
-  if (!challenge.issueKey || challenge.issueKey.trim().length === 0) {
-    return false;
-  }
-
-  // counterargument must be specific — reject filler
-  if (!challenge.counterargument || challenge.counterargument.trim().length < 20) {
-    return false;
-  }
-
-  // failureScenario must be concrete — reject filler
-  if (!challenge.failureScenario || challenge.failureScenario.trim().length < 20) {
-    return false;
-  }
-
-  // Reject known filler patterns
-  const fillerPatterns = [
-    /^this seems wrong$/i,
-    /^this could be better$/i,
-    /^this is risky$/i,
-    /^this feels overconfident$/i,
-    /^needs improvement$/i,
-  ];
-
-  for (const pattern of fillerPatterns) {
-    if (
-      pattern.test(challenge.counterargument.trim()) ||
-      pattern.test(challenge.failureScenario.trim())
-    ) {
-      return false;
-    }
-  }
-
-  return true;
+export interface PreRelayChallenge {
+  issueKey: string;
+  category: ArrcChallengeCategory;
+  subtype: string;
+  severity: ArrcChallengeSeverity;
+  target: DraftSpan;
+  counterargument: string;
+  failureScenario: string;
+  signal: number;
+  fingerprint: string;
 }

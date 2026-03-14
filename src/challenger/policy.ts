@@ -1,89 +1,84 @@
-import type { ArrcInput, StructuredChallenge } from "../types.js";
-import { findSpan, isAdmissible, makeId } from "./util.js";
+import type { ArrcInput } from "../types.js";
+import { findSpan, splitSentences } from "../util.js";
+import type { RawChallenge } from "./util.js";
+import { isAdmissible } from "./util.js";
 
-const ALLOW_PATTERN = /\b(allowed|permit|can|may|accept|approve)\b/i;
+const ALLOW_PATTERN = /\b(allowed|permit|can|accept|approve)\b/i;
 const DENY_PATTERN = /\b(not allowed|forbidden|refuse|deny|reject|prohibit|block)\b/i;
 const ESCALATE_PATTERN = /\b(escalate|refer|forward|hand off|human review|manual)\b/i;
-const VAGUE_POLICY_PATTERN = /\b(may be|in some cases|special cases|when appropriate|as needed|discretion)\b/i;
+const VAGUE_POLICY_PATTERN =
+  /\b(may be|in some cases|special cases|when appropriate|as needed|discretion|at .+ judgment)\b/i;
 
 /**
- * Policy challenger: targets policy boundaries that are missing or ambiguous.
- *
- * Local-contract rule: challenges must cite specific missing boundary types,
- * not generic "policy is unclear" warnings.
+ * Policy challenger:
+ * - Requires explicit allow/deny/escalate structure
+ * - Detects vague terms that are not operationalized
+ * - Distinguishes "missing boundary" from "vague boundary"
  */
 export function generatePolicyChallenges(
   draft: string,
   _input: ArrcInput,
-): StructuredChallenge[] {
-  const challenges: StructuredChallenge[] = [];
+): RawChallenge[] {
+  const challenges: RawChallenge[] = [];
 
   const hasAllow = ALLOW_PATTERN.test(draft);
   const hasDeny = DENY_PATTERN.test(draft);
   const hasEscalate = ESCALATE_PATTERN.test(draft);
-  const hasVaguePolicy = VAGUE_POLICY_PATTERN.test(draft);
 
-  // Missing boundary type: need allow + deny + escalate for complete policy
-  const missingBoundaries: string[] = [];
-  if (!hasAllow) missingBoundaries.push("allow");
-  if (!hasDeny) missingBoundaries.push("deny");
-  if (!hasEscalate) missingBoundaries.push("escalate");
+  // Missing boundary types
+  const missing: string[] = [];
+  if (!hasAllow) missing.push("allow");
+  if (!hasDeny) missing.push("deny");
+  if (!hasEscalate) missing.push("escalate");
 
-  if (missingBoundaries.length >= 2) {
-    const span = findSpan(draft, draft.trim().split(/[.!?\n]/)[0]?.trim() ?? draft.trim());
+  if (missing.length >= 2) {
+    const firstSentence = splitSentences(draft)[0]?.trim() ?? draft.trim();
+    const span = findSpan(draft, firstSentence);
     if (span) {
-      const challenge: StructuredChallenge = {
-        id: makeId("policy-missing-boundaries", span),
-        issueKey: `policy:missing-boundaries:${missingBoundaries.join(",")}`,
+      const c: RawChallenge = {
         category: "policy",
+        subtype: "missing-boundaries",
         severity: "high",
         target: span,
         counterargument:
-          `The policy is missing explicit ${missingBoundaries.join(" and ")} boundaries. ` +
-          `A complete policy must define what is allowed, what is denied, and when to escalate. ` +
-          `Without these, the system must improvise under pressure.`,
+          `The policy is missing explicit ${missing.join(" and ")} boundaries. ` +
+          `A complete policy must define what is allowed, what is denied, and when to escalate.`,
         failureScenario:
-          `A user requests an action at the boundary of the policy. Without explicit ` +
-          `${missingBoundaries.join("/")} rules, the system either over-permits (risk) or ` +
-          `over-denies (poor experience), with no escalation path for ambiguous cases.`,
+          `A user requests an action at the boundary. Without explicit ` +
+          `${missing.join("/")} rules, the system over-permits or over-denies ` +
+          `with no escalation path.`,
         signal: 0.88,
       };
-      if (isAdmissible(challenge)) {
-        challenges.push(challenge);
-      }
+      if (isAdmissible(c)) challenges.push(c);
     }
   }
 
-  // Vague policy language
-  if (hasVaguePolicy) {
-    const sentences = draft.split(/(?<=[.!?])\s+/);
-    for (const sentence of sentences) {
-      const vagueMatch = sentence.match(VAGUE_POLICY_PATTERN);
-      if (!vagueMatch) continue;
+  // Vague boundary language: specific per-sentence detection
+  const sentences = splitSentences(draft);
+  for (const sentence of sentences) {
+    const vagueMatch = sentence.match(VAGUE_POLICY_PATTERN);
+    if (!vagueMatch) continue;
 
-      const span = findSpan(draft, sentence.trim());
-      if (!span) continue;
+    const span = findSpan(draft, sentence.trim());
+    if (!span) continue;
 
-      const challenge: StructuredChallenge = {
-        id: makeId("policy-vague", span),
-        issueKey: `policy:vague-boundary:${vagueMatch[1]!.toLowerCase().replace(/\s+/g, "-")}:${span.start}`,
-        category: "policy",
-        severity: "medium",
-        target: span,
-        counterargument:
-          `The phrase "${vagueMatch[1]!}" creates an ambiguous boundary. ` +
-          `It does not specify who decides, under what criteria, or what the default action is. ` +
-          `This leaves the boundary open to interpretation under adversarial pressure.`,
-        failureScenario:
-          `A user argues they qualify for the vague condition ("${vagueMatch[1]}"). ` +
-          `The system has no concrete criteria to evaluate the claim, so it either ` +
-          `grants the request inappropriately or refuses without justification.`,
-        signal: 0.80,
-      };
-      if (isAdmissible(challenge)) {
-        challenges.push(challenge);
-      }
-    }
+    const vagueTerm = vagueMatch[1]!;
+
+    const c: RawChallenge = {
+      category: "policy",
+      subtype: "vague-boundary",
+      severity: "medium",
+      target: span,
+      counterargument:
+        `The phrase "${vagueTerm}" creates an ambiguous boundary. It does not specify ` +
+        `who decides, under what criteria, or what the default action is.`,
+      failureScenario:
+        `A user argues they qualify for "${vagueTerm}". The system has no concrete ` +
+        `criteria to evaluate the claim, so it grants inappropriately or refuses ` +
+        `without justification.`,
+      signal: 0.80,
+    };
+    if (isAdmissible(c)) challenges.push(c);
   }
 
   return challenges;

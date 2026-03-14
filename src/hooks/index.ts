@@ -1,15 +1,14 @@
 import type { ArrcRiskTier, ArrcTriggerContext, VulnerabilityAssessment } from "../types.js";
 
 /**
- * Select ARRC tier based on trigger context.
+ * Tier selection.
  *
- * Tier 0: bypass — no meaningful rebuttal risk
+ * Tier 0: bypass
  * Tier 1: light screen, one pass
  * Tier 2: standard loop
- * Tier 3: deep loop with broader challenge coverage and stricter escalation sensitivity
+ * Tier 3: deep loop — broader challenge coverage, stricter escalation sensitivity
  *
- * Important: Tier 3 does not lower proof standards.
- * It increases challenge breadth and escalation sensitivity.
+ * Tier 3 does NOT lower proof standards. It increases challenge breadth and escalation sensitivity.
  */
 export function selectArrcTier(context: ArrcTriggerContext = {}): ArrcRiskTier {
   if (
@@ -33,8 +32,7 @@ export function selectArrcTier(context: ArrcTriggerContext = {}): ArrcRiskTier {
 }
 
 /**
- * Determine the effective tier by combining trigger context with classifier output.
- * Takes the higher of the two tiers.
+ * Effective tier: max of trigger context tier and classifier tier.
  */
 export function effectiveTier(
   context: ArrcTriggerContext = {},
@@ -46,7 +44,7 @@ export function effectiveTier(
 }
 
 /**
- * Determine whether ARRC should trigger for this input.
+ * Whether ARRC should trigger.
  */
 export function shouldTriggerArrc(
   context: ArrcTriggerContext = {},
@@ -56,19 +54,14 @@ export function shouldTriggerArrc(
 }
 
 /**
- * Get the maximum number of rounds for a given tier.
+ * Max rounds for tier.
  */
 export function maxRoundsForTier(tier: ArrcRiskTier): number {
   switch (tier) {
-    case 0:
-      return 0;
-    case 1:
-      return 1;
-    case 2:
-      return 2;
-    case 3:
-      return 3;
-    default:
-      return 2;
+    case 0: return 0;
+    case 1: return 1;
+    case 2: return 2;
+    case 3: return 3;
+    default: return 2;
   }
 }

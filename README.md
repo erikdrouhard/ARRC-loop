@@ -1,44 +1,36 @@
-# ARRC Loop
+# ARRC Loop v2
 
-[![Status: v1 Runtime](https://img.shields.io/badge/status-v1_runtime-blue)](#status)
+[![Status: v2 Runtime](https://img.shields.io/badge/status-v2_runtime-blue)](#status)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](#license)
 
-**Adversarial Rebuttal Relay Convergence — a relay-mediated convergence protocol for LLM outputs, agents, and schemas**
+**Adversarial Rebuttal Relay Convergence — an issue-lifecycle convergence engine for LLM outputs**
 
-ARRC Loop is not a judge. It is a **relay-mediated convergence protocol**.
+ARRC Loop is not a judge. It is a **relay-mediated convergence protocol** that tracks issues through a full lifecycle from detection to resolution, persistence, or escalation.
 
-A draft is challenged, that challenge is relayed, the response is relayed back, revisions are made only where justified, and the process continues until the result reaches a justified termination state.
+## What Changed in v2
 
-## Core Insight
+v1 was a mostly-heuristic lint-and-escalate pipeline with architecture theater (no-op relay, "because" counted as evidence, placeholder "repairs", fake convergence under weak coverage). v2 fixes that:
 
-No single component has global epistemic authority.
-
-Each module is responsible only for its **local contract**:
-
-- the **classifier** routes risk conservatively
-- the **challenger** produces admissible challenges
-- the **relay** transports arguments under protocol constraints
-- the **verifier** determines whether a challenge is locally valid
-- the **reviser** applies minimal scoped repair
-- the **resolver** determines whether the loop reached a justified termination state
-
-The signal comes from **relay-mediated convergence under structured disagreement**.
+| v1 Problem | v2 Fix |
+|---|---|
+| Relay was a pass-through nobody consumed | Relay canonicalizes targets, assigns lineage tokens, validates protocol invariants, downgrades/rejects malformed challenges. Verifier and reviser consume `RelayedChallenge`, not raw challenges. |
+| "because" counted as evidence | Evidence taxonomy with 6 classes. Only `citation-like`, `quantitative`, `executable`, `tool-verified` reduce factual vulnerability. `explanatory` (discourse markers) does not. |
+| Logical routing required absolute wording | Logical challenger fires on single-reason sufficiency, hidden premises, premise/conclusion mismatch — no "always"/"never" gate. |
+| Policy repair inserted "[criteria to be specified]" | No placeholders. If concrete criteria can't be inferred, issue is marked `unrepairable` with explicit reason. |
+| Schema/persona paths were detect-and-escalate | Category-specific repair strategies where possible, typed `unsupported` capability path where not. |
+| Coverage was a global abstention union | Per-issue, per-dimension, per-round coverage tracking. Earlier coverage not erased by later abstention. |
+| Persistence conflated with oscillation | 5 distinct issue states: `persistent`, `regressed`, `oscillating`, `unrepairable`, `resolved`. |
+| No re-verification after repair | Repairs trigger re-verification against the original triggering issue. Repair only counts if issue transitions to `resolved`. |
 
 ## Core Invariant
 
 > **Stability without adequate challenge coverage is not convergence.**
 
-A draft is not considered converged unless it is both **stable** and **adequately challenged**. If the output stops moving because challenge coverage was weak, abstention-heavy, or underexplored, the correct result is **escalate**, not approve.
-
 ## Quick Start
-
-### Install
 
 ```bash
 npm install arrc-loop
 ```
-
-### Basic Usage
 
 ```ts
 import { runARRC } from "arrc-loop";
@@ -46,173 +38,141 @@ import { runARRC } from "arrc-loop";
 const result = runARRC({
   draft: "The API always returns JSON and never fails silently.",
   taskType: "reasoning",
-  maxRounds: 2,
-  metadata: {
-    highStakes: true,
-  },
+  metadata: { highStakes: true },
 });
 
-if (result.shouldShip) {
-  return result.output;
-}
-
-if (result.decision === "escalate") {
-  return escalateToHumanOrTools(result.reasons);
-}
-
-if (result.decision === "revise") {
-  return retry(result);
-}
-
-throw new Error("ARRC rejected output");
+// result.decision: "approve" | "narrow" | "revise" | "escalate" | "reject"
+// result.issues: IssueRecord[] — full lifecycle per issue
+// result.coverage: ChallengeCoverageV2 — per-dimension, per-round
+// result.shouldShip: boolean
 ```
 
-## Termination States
+## Issue Lifecycle
 
-```ts
-type ArrcDecision =
-  | "approve"   // stable, adequately challenged, no verified issues
-  | "narrow"    // verified issues addressed by scoped revision, converged
-  | "revise"    // verified issues remain, upstream rewrite needed
-  | "escalate"  // oscillation, budget exceeded, or weak coverage
-  | "reject";   // multiple severe failures, no safe repair path
+Each issue is tracked through a first-class lifecycle:
+
 ```
+candidate → admissible → verified → repaired → rechecked → resolved
+                                  → persistent (repair failed)
+                                  → regressed (repair changed text but issue returned)
+                                  → oscillating (repaired, resolved, then reappeared)
+                                  → unrepairable (no local repair strategy)
+                                  → abstained (verifier declined)
+```
+
+The resolver reasons from lifecycle state, not counts.
+
+## Evidence Taxonomy
+
+```
+none          — no support found
+explanatory   — discourse markers (because, therefore, since) — NOT evidence
+citation-like — references, sources, "according to"
+quantitative  — measurements, percentages, data
+executable    — test results, benchmarks, audits
+tool-verified — automated tool output
+```
+
+Only the last four materially reduce factual vulnerability.
 
 ## Architecture
 
 ```text
 Draft arrives
-  → Vulnerability classifier (conservative gate)
-  → Low-risk → approve with confidence tag, skip full loop
-  → Potentially vulnerable → identify dimensions (factual, logical, schema, persona, policy)
-       → Route to dimension-specific challenger
-       → Challenger produces: { target, counterargument, failureScenario, issueKey }
-       → Relay challenge into verification path
-       → Verifier determines whether challenge is locally valid
-       → Only verified challenges trigger targeted revision
-       → Revision scoped to challenged spans only
-       → Relay revised output into next pass
-       → Convergence + coverage check:
-            stable + adequate coverage → ship
-            oscillating → escalate
-            budget exceeded → escalate
-            stable + inadequate coverage → escalate
+  → Classifier (sentence-level candidate detection with evidence classification)
+  → Tier selection (0–3)
+  → For each round:
+       → Challenger (dimension-specific, span-targeted)
+       → Relay (canonicalize, assign lineage, validate protocol, downgrade/reject)
+       → Verifier (consumes RelayedChallenge, returns evidence class)
+       → Reviser (issue-specific repair, no placeholders)
+       → Re-verify repaired issues against original trigger
+       → Update issue lifecycle status
+  → Coverage check (per-dimension, per-round)
+  → Resolver (workflow authority from issue lifecycle state)
 ```
 
-The resolver does not decide truth. It determines whether the loop reached a justified termination state.
+## Module Contracts
 
-## Module Design
+| Module | Consumes | Produces | Contract |
+|---|---|---|---|
+| Classifier | draft text | `CandidateIssue[]` with evidence class | Sentence-level detection. "because" ≠ evidence. Logical fires without absolutes. |
+| Challenger | draft, dimensions | `PreRelayChallenge[]` | Dimension-specific. Precision > recall. Abstain rather than fake. |
+| Relay | `PreRelayChallenge[]` | `RelayedChallenge[]` | Canonicalize, lineage, validate, reject malformed, downgrade protocol issues. |
+| Verifier | `RelayedChallenge[]` | `VerificationResult[]` with evidence class | Per-dimension strategy. Explanatory ≠ evidence. |
+| Reviser | `RelayedChallenge[]` + verifications | `RevisionOutcome` | Issue-specific repair. No placeholders. Honest `unsupported` path. |
+| Resolver | `IssueRecord[]` + coverage + convergence | `ArrcResult` | Workflow authority, not truth authority. Reasons from lifecycle state. |
 
-| Module | Path | Contract |
-|--------|------|----------|
-| **Classifier** | `src/classifier/` | Routes risk conservatively. Flags dimensions. Not a hidden oracle. |
-| **Challenger** | `src/challenger/` | Dimension-specific (`factual`, `logical`, `schema`, `persona`, `policy`). Span-based targeting. Precision > recall. |
-| **Relay** | `src/relay/` | First-class protocol role. Transports arguments under constraints. Does not invent or omit. |
-| **Verifier** | `src/verifier/` | Strategy-based verification per dimension. Bottoms out in something structural, testable, or executable. |
-| **Reviser** | `src/reviser/` | Scoped repair to targeted spans only. Untouched regions preserved byte-identical. |
-| **Resolver** | `src/resolver/` | Workflow authority, not truth authority. Enforces the core invariant. |
-| **Hooks** | `src/hooks/` | Tier selection (0–3) combining trigger context + classifier output. |
-| **Orchestrator** | `src/index.ts` | `runARRC()` — manages sequencing, coverage, convergence, and termination. |
-
-## Principles
-
-### 1. The draft stands unless a challenge earns revision
-
-This is the most important rule in the system.
-
-### 2. Empty is better than fake
-
-If a module cannot do its job honestly, it returns nothing or abstains.
-
-### 3. No module may rely on downstream correction
-
-Each module must satisfy its own local contract as if its output matters directly.
-
-### 4. Stability without adequate challenge coverage is not convergence
-
-A draft is not converged unless it is both stable and adequately challenged.
-
-### 5. Relay is a first-class protocol role
-
-Not optional plumbing. The relay is part of the method.
-
-## Trigger Tiers
-
-| Tier | Behavior |
-|------|----------|
-| **0** | Bypass — no meaningful rebuttal risk |
-| **1** | Light screen, one pass |
-| **2** | Standard loop |
-| **3** | Deep loop — broader challenge coverage, stricter escalation sensitivity |
-
-Tier 3 does **not** lower proof standards. It increases challenge breadth and escalation sensitivity.
-
-## v1 Scope
-
-This v1 targets **structured and semi-structured outputs**:
-
-- schemas
-- policy boundaries
-- constrained answer formats
-- tool-backed outputs
-
-It is **not** expected to solve open-ended free-text reasoning durability in v1. If a challenge cannot be generated or verified honestly, the system abstains, surfaces uncertainty, or escalates. Never fakes signal.
-
-## Result Contract
+## Termination States
 
 ```ts
-interface ArrcResult {
-  decision: ArrcDecision;
-  confidence: number;
-  output?: string;
-  reasons: string[];
-  rounds: ArrcRound[];
-  tier: ArrcRiskTier;
-  convergence: ConvergenceState;
-  coverage: ChallengeCoverage;
-  shouldShip: boolean;
-}
+type ArrcDecision =
+  | "approve"   // stable, adequately challenged, no unresolved issues
+  | "narrow"    // issues resolved via scoped repair, output changed
+  | "revise"    // issues remain, upstream rewrite needed
+  | "escalate"  // oscillation, inadequate coverage, or budget exceeded
+  | "reject";   // no credible repair path
 ```
+
+## What Is Deterministic Core vs Extension Seam
+
+**Deterministic core (implemented):**
+- Regex/pattern-based classification and challenge generation
+- Rule-based verification strategies per dimension
+- Issue-specific repair with explicit strategy dispatch
+- Full issue lifecycle state machine
+- Round-aware coverage accounting
+- Protocol-enforcing relay
+
+**Extension seams (interfaces exist, not implemented):**
+- Model-backed challengers (swap challenger functions)
+- Tool-backed verifiers (swap verification strategies)
+- Ensemble verifiers
+- Model-based relay with argument transformation
+- External evidence resolution
+
+## Limitations
+
+- Challengers use regex/pattern heuristics, not LLM-based analysis. They will false-positive on some constructions and miss subtler issues.
+- Schema repair can only add constraints when field names are mentioned in prose. Most schema issues surface as `unrepairable`.
+- Persona repair works only when enough trait keywords are present to build a contract clause. Otherwise `unsupported`.
+- Policy repair works only when the subject of the vague term is quantifiable. Otherwise `unsupported`.
+- Evidence classification is keyword-based, not semantic. A sentence containing "test" near a claim gets `executable` evidence class even if the "test" is unrelated.
+- No persistence layer. Issue lifecycle exists only within a single `runARRC` invocation.
 
 ## Repo Structure
 
 ```text
 arrc-loop/
 ├── src/
-│   ├── classifier/     # Vulnerability classification
-│   ├── challenger/      # Dimension-specific challengers
-│   │   ├── factual.ts
-│   │   ├── logical.ts
-│   │   ├── schema.ts
-│   │   ├── persona.ts
-│   │   ├── policy.ts
-│   │   └── util.ts
-│   ├── relay/           # First-class relay protocol
-│   ├── verifier/        # Strategy-based verification
-│   ├── reviser/         # Scoped span repair
-│   ├── resolver/        # Termination-state resolver
-│   ├── hooks/           # Tier selection
-│   ├── types.ts         # Full type system
-│   └── index.ts         # Orchestrator (runARRC)
+│   ├── types.ts           # Full type system (IssueRecord, evidence taxonomy, coverage v2)
+│   ├── util.ts            # Shared utilities (splitSentences, findSpan, fingerprint, canonicalize)
+│   ├── classifier/        # Sentence-level vulnerability detection with evidence classification
+│   ├── challenger/        # Dimension-specific challengers (factual, logical, schema, persona, policy)
+│   ├── relay/             # Protocol stage: canonicalize, lineage, validate, downgrade/reject
+│   ├── verifier/          # Strategy-based verification with evidence class output
+│   ├── reviser/           # Issue-specific repair with honest unsupported path
+│   ├── resolver/          # Termination-state resolver from issue lifecycle
+│   ├── hooks/             # Tier selection (0–3)
+│   └── index.ts           # Orchestrator (runARRC) with issue lifecycle management
 ├── tests/
-├── examples/
-│   ├── reasoning/
-│   ├── persona/
-│   ├── policy/
-│   └── schema/
+│   └── arrc-loop.test.ts  # 35 tests covering all 9 regression areas
 └── docs/
 ```
 
-## Status
+## Test Coverage
 
-v1 runtime implemented. 22 tests passing across classifier, challengers, verifier, reviser, resolver, and full loop integration.
+35 tests across 9 diagnostic areas:
 
-The core runtime is **deterministic by default** with clean interfaces for future:
-- model-backed challengers
-- tool-backed verifiers
-- ensemble verifiers
-- simulation-backed persona/policy checks
-- model-based relays
+1. **Relay is material** — relayed challenges have canonicalTarget/lineageToken that raw lack; malformed challenges rejected; protocol violations downgrade severity
+2. **"Because" is not evidence** — classifier and verifier both treat discourse markers as explanatory, not material
+3. **Logical challenge without absolutes** — "The system is secure because it uses encryption" triggers logical issue
+4. **Policy placeholder ban** — no "criteria to be specified" or placeholder text in repairs
+5. **Schema/persona honesty** — unrepairable surfaces explicitly, not silently converged
+6. **Coverage accounting** — per-dimension per-round; earlier coverage not erased by later abstention
+7. **Persistence vs oscillation** — separate states with different resolver responses
+8. **Issue-specific re-verification** — repaired issues rechecked; repair only counts if issue resolves
+9. **Full loop integration** — 5 acceptance examples + edge cases
 
 ## License
 

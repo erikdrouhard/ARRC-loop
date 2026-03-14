@@ -1,7 +1,7 @@
 {
   "name": "arrc-loop",
-  "version": "0.2.0",
-  "description": "Adversarial Rebuttal Relay Convergence — relay-mediated convergence protocol for LLM outputs, agents, and schemas",
+  "version": "2.0.0",
+  "description": "Adversarial Rebuttal Relay Convergence — issue-lifecycle convergence engine for LLM outputs",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",

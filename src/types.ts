@@ -1,4 +1,4 @@
-// ARRC Loop — Adversarial Rebuttal Relay Convergence
+// ARRC Loop v2 — Adversarial Rebuttal Relay Convergence
 // Core invariant: Stability without adequate challenge coverage is not convergence.
 
 // --- Decisions & Classifications ---
@@ -29,6 +29,96 @@ export type ArrcChallengeCategory =
 
 export type ArrcChallengeSeverity = "low" | "medium" | "high";
 
+// --- Evidence Taxonomy ---
+
+export type EvidenceClass =
+  | "none"
+  | "explanatory"
+  | "citation-like"
+  | "quantitative"
+  | "executable"
+  | "tool-verified";
+
+/**
+ * Only these evidence classes can materially reduce factual vulnerability.
+ * "none" and "explanatory" do not count as evidence.
+ */
+export const MATERIAL_EVIDENCE_CLASSES: ReadonlySet<EvidenceClass> = new Set([
+  "citation-like",
+  "quantitative",
+  "executable",
+  "tool-verified",
+]);
+
+// --- Issue Lifecycle ---
+
+export type IssueStatus =
+  | "candidate"
+  | "admissible"
+  | "verified"
+  | "repaired"
+  | "rechecked"
+  | "resolved"
+  | "persistent"
+  | "regressed"
+  | "oscillating"
+  | "unrepairable"
+  | "abstained";
+
+export type RepairStrategy =
+  | "soften"
+  | "split-claim"
+  | "add-condition"
+  | "bind-policy-boundary"
+  | "add-schema-constraint"
+  | "persona-contract-rewrite"
+  | "unsupported";
+
+export interface DraftSpan {
+  text: string;
+  start: number;
+  end: number;
+  sentenceIndex?: number;
+}
+
+export interface IssueRecord {
+  issueKey: string;
+  category: ArrcChallengeCategory;
+  fingerprint: string;
+  discoveredRound: number;
+  latestRound: number;
+  target: DraftSpan;
+  challenge: {
+    counterargument: string;
+    failureScenario: string;
+    severity: ArrcChallengeSeverity;
+    signal: number;
+  };
+  relay: {
+    canonicalTargetText: string;
+    lineageToken: string;
+    normalized: boolean;
+    protocolWarnings: string[];
+  };
+  verificationHistory: Array<{
+    round: number;
+    accepted: boolean;
+    abstained?: boolean;
+    rationale: string;
+    evidenceClass: EvidenceClass;
+    confidence: number;
+  }>;
+  repairHistory: Array<{
+    round: number;
+    applied: boolean;
+    reason: string;
+    strategy: RepairStrategy;
+    before: string;
+    after: string;
+  }>;
+  status: IssueStatus;
+}
+
 // --- Trigger Context ---
 
 export interface ArrcTriggerContext {
@@ -53,59 +143,38 @@ export interface ArrcInput {
   maxRounds?: number;
 }
 
-// --- Spans ---
-
-export interface DraftSpan {
-  text: string;
-  start: number;
-  end: number;
-}
-
 // --- Classifier ---
+
+export interface CandidateIssue {
+  span: DraftSpan;
+  category: ArrcChallengeCategory;
+  reason: string;
+  evidenceClass: EvidenceClass;
+  subtype: string;
+}
 
 export interface VulnerabilityAssessment {
   score: number;
   flaggedDimensions: ArrcChallengeCategory[];
   recommendedTier: ArrcRiskTier;
   reasons: string[];
-}
-
-// --- Challenger ---
-
-export interface StructuredChallenge {
-  id: string;
-  issueKey: string;
-  category: ArrcChallengeCategory;
-  severity: ArrcChallengeSeverity;
-  target: DraftSpan;
-  counterargument: string;
-  failureScenario: string;
-  signal: number;
+  candidates: CandidateIssue[];
 }
 
 // --- Relay ---
 
-export type RelayMode = "auto" | "manual";
-
-export interface RelayPayload {
+export interface RelayedChallenge {
   issueKey: string;
   category: ArrcChallengeCategory;
-  target: DraftSpan;
+  severity: ArrcChallengeSeverity;
+  canonicalTarget: DraftSpan;
   counterargument: string;
   failureScenario: string;
-}
-
-export interface RelayContext {
-  relayMode: RelayMode;
-  identityMasked: boolean;
-  normalizedFields: Array<"target" | "counterargument" | "failureScenario">;
-  lineagePreserved: boolean;
-}
-
-export interface RelayResult {
-  payload: RelayPayload;
-  context: RelayContext;
-  notes?: string[];
+  lineageToken: string;
+  signal: number;
+  protocolWarnings: string[];
+  downgraded: boolean;
+  fingerprint: string;
 }
 
 // --- Verifier ---
@@ -114,59 +183,61 @@ export interface VerificationResult {
   accepted: boolean;
   confidence: number;
   rationale: string;
+  evidenceClass: EvidenceClass;
   evidence?: string;
   abstained?: boolean;
 }
 
-export interface VerificationStrategy {
-  verify(
-    challenge: StructuredChallenge,
-    draft: string,
-    context: ArrcInput,
-  ): VerificationResult;
-}
-
 // --- Reviser ---
 
-export interface ScopedRevision {
-  output: string;
-  changes: Array<{
-    issueKey: string;
-    originalSpan: DraftSpan;
-    revisedSpan: DraftSpan;
-    reason: string;
-  }>;
-  unchanged: boolean;
-  unresolvable: string[];
+export interface RepairResult {
+  applied: boolean;
+  strategy: RepairStrategy;
+  before: string;
+  after: string;
+  reason: string;
 }
 
-// --- Coverage ---
+// --- Coverage v2 ---
 
-export interface ChallengeCoverage {
-  dimensionsAttempted: ArrcChallengeCategory[];
-  dimensionsAbstained: ArrcChallengeCategory[];
-  admissibleChallengesProduced: number;
-  verifiedChallengesProduced: number;
+export interface DimensionCoverage {
+  dimension: ArrcChallengeCategory;
+  flagged: boolean;
+  attemptedRounds: number[];
+  abstainedRounds: number[];
+  admissibleIssueKeys: string[];
+  verifiedIssueKeys: string[];
+  resolvedIssueKeys: string[];
+  unresolvedIssueKeys: string[];
   coverageAdequate: boolean;
-  coverageNotes: string[];
+  notes: string[];
+}
+
+export interface RoundCoverage {
+  round: number;
+  dimensionsAttempted: ArrcChallengeCategory[];
+  issueKeysChallenged: string[];
+  issueKeysVerified: string[];
+  issueKeysResolved: string[];
+  abstentions: Array<{ dimension: ArrcChallengeCategory; reason: string }>;
+}
+
+export interface ChallengeCoverageV2 {
+  byDimension: DimensionCoverage[];
+  byRound: RoundCoverage[];
+  overallAdequate: boolean;
+  notes: string[];
 }
 
 // --- Convergence ---
 
 export interface ConvergenceState {
   isStable: boolean;
-  isOscillating: boolean;
+  hasPersistentIssues: boolean;
+  hasOscillation: boolean;
+  hasRegression: boolean;
   budgetExceeded: boolean;
   roundsCompleted: number;
-}
-
-// --- Round ---
-
-export interface ArrcRound {
-  round: number;
-  challenges: StructuredChallenge[];
-  verifications: VerificationResult[];
-  revision?: ScopedRevision;
 }
 
 // --- Result ---
@@ -176,9 +247,9 @@ export interface ArrcResult {
   confidence: number;
   output?: string;
   reasons: string[];
-  rounds: ArrcRound[];
+  issues: IssueRecord[];
   tier: ArrcRiskTier;
   convergence: ConvergenceState;
-  coverage: ChallengeCoverage;
+  coverage: ChallengeCoverageV2;
   shouldShip: boolean;
 }

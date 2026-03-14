@@ -1,108 +1,132 @@
-import type {
-  RelayContext,
-  RelayMode,
-  RelayPayload,
-  RelayResult,
-  StructuredChallenge,
-} from "../types.js";
+import type { PreRelayChallenge } from "../challenger/util.js";
+import type { ArrcChallengeSeverity, RelayedChallenge } from "../types.js";
+import { canonicalize, lineageToken } from "../util.js";
 
 /**
- * The relay is a first-class protocol role.
+ * Relay — first-class protocol stage.
  *
- * It transports challenges, responses, and revisions between stages
- * while preserving protocol rules.
+ * The relay is NOT a pass-through. It:
+ * 1. Canonicalizes target text (whitespace normalization)
+ * 2. Assigns lineage tokens for tracking across rounds
+ * 3. Validates protocol invariants and records warnings
+ * 4. Rejects malformed challenges (returns null)
+ * 5. Downgrades confidence for challenges with protocol issues
  *
- * Relay rules for v1:
- * - do not invent new arguments
- * - do not omit material content
- * - normalize shape if needed
- * - preserve target span and issue lineage
- * - keep identity-neutral by default
- * - v1 may always use relayMode: "auto", but the seam must exist
+ * Verifier and reviser consume RelayedChallenge, not raw challenges.
+ * If the relay is bypassed, downstream behavior changes:
+ * - no lineage tokens → tracking breaks
+ * - no canonicalization → span matching becomes brittle
+ * - no protocol validation → malformed challenges reach verifier
  */
 
-function buildContext(relayMode: RelayMode): RelayContext {
-  return {
-    relayMode,
-    identityMasked: true,
-    normalizedFields: ["target", "counterargument", "failureScenario"],
-    lineagePreserved: true,
-  };
-}
-
-function normalizePayload(payload: RelayPayload): RelayPayload {
-  return {
-    issueKey: payload.issueKey,
-    category: payload.category,
-    target: {
-      text: payload.target.text,
-      start: payload.target.start,
-      end: payload.target.end,
-    },
-    counterargument: payload.counterargument.trim(),
-    failureScenario: payload.failureScenario.trim(),
-  };
+export interface RelayOptions {
+  round: number;
+  /** If true, reject challenges with protocol warnings instead of downgrading */
+  strict?: boolean;
 }
 
 /**
- * Convert a StructuredChallenge to a RelayPayload.
+ * Relay a pre-relay challenge into the verification path.
+ *
+ * Returns null if the challenge is fundamentally malformed and cannot be relayed.
+ * In strict mode, also rejects challenges with any protocol warning.
  */
-export function challengeToPayload(challenge: StructuredChallenge): RelayPayload {
+export function relayChallenge(
+  challenge: PreRelayChallenge,
+  options: RelayOptions,
+): RelayedChallenge | null {
+  const warnings: string[] = [];
+  let downgraded = false;
+
+  // Validate: target text must exist and be non-empty
+  if (!challenge.target.text || challenge.target.text.trim().length === 0) {
+    return null; // fundamentally malformed, reject
+  }
+
+  // Validate: counterargument and failure scenario must be substantive
+  if (challenge.counterargument.trim().length < 20) {
+    return null;
+  }
+  if (challenge.failureScenario.trim().length < 20) {
+    return null;
+  }
+
+  // Validate: issueKey must exist
+  if (!challenge.issueKey || challenge.issueKey.trim().length === 0) {
+    warnings.push("Missing issueKey: lineage tracking will be broken.");
+    downgraded = true;
+  }
+
+  // Validate: span bounds
+  if (challenge.target.start < 0 || challenge.target.end <= challenge.target.start) {
+    warnings.push("Invalid span bounds: start/end are inconsistent.");
+    downgraded = true;
+  }
+
+  // Validate: fingerprint must exist for stable tracking
+  if (!challenge.fingerprint || challenge.fingerprint.length === 0) {
+    warnings.push("Missing fingerprint: cross-round deduplication will fail.");
+    downgraded = true;
+  }
+
+  // Strict mode: reject on any warning
+  if (options.strict && warnings.length > 0) {
+    return null;
+  }
+
+  // Canonicalize target text
+  const canonical = canonicalize(challenge.target.text);
+
+  // Determine effective severity — downgrade if protocol issues exist
+  let effectiveSeverity = challenge.severity;
+  let effectiveSignal = challenge.signal;
+  if (downgraded) {
+    effectiveSignal = Math.max(0.1, effectiveSignal - 0.2);
+    if (effectiveSeverity === "high") {
+      effectiveSeverity = "medium";
+    } else if (effectiveSeverity === "medium") {
+      effectiveSeverity = "low";
+    }
+  }
+
+  const ct: RelayedChallenge["canonicalTarget"] = {
+    text: canonical,
+    start: challenge.target.start,
+    end: challenge.target.end,
+  };
+  if (challenge.target.sentenceIndex !== undefined) {
+    ct.sentenceIndex = challenge.target.sentenceIndex;
+  }
+
   return {
     issueKey: challenge.issueKey,
     category: challenge.category,
-    target: challenge.target,
-    counterargument: challenge.counterargument,
-    failureScenario: challenge.failureScenario,
+    severity: effectiveSeverity,
+    canonicalTarget: ct,
+    counterargument: challenge.counterargument.trim(),
+    failureScenario: challenge.failureScenario.trim(),
+    lineageToken: lineageToken(challenge.issueKey, options.round),
+    signal: effectiveSignal,
+    protocolWarnings: warnings,
+    downgraded,
+    fingerprint: challenge.fingerprint,
   };
 }
 
 /**
- * Relay a challenge into the verification path.
- *
- * The relay does not invent new arguments or omit material content.
- * It normalizes shape and preserves lineage.
+ * Relay a batch of pre-relay challenges.
+ * Filters out null (rejected) challenges and returns the relayed set.
  */
-export function relayChallenge(
-  payload: RelayPayload,
-  relayMode: RelayMode = "auto",
-): RelayResult {
-  const normalized = normalizePayload(payload);
-  const context = buildContext(relayMode);
-
-  const notes: string[] = [];
-
-  // Validate lineage preservation
-  if (!normalized.issueKey) {
-    notes.push("Warning: issueKey missing, lineage may be broken.");
+export function relayChallenges(
+  challenges: PreRelayChallenge[],
+  options: RelayOptions,
+): RelayedChallenge[] {
+  const results: RelayedChallenge[] = [];
+  for (const c of challenges) {
+    const relayed = relayChallenge(c, options);
+    if (relayed !== null) {
+      results.push(relayed);
+    }
   }
-
-  // Validate target span integrity
-  if (!normalized.target.text || normalized.target.text.trim().length === 0) {
-    notes.push("Warning: target span is empty.");
-  }
-
-  return {
-    payload: normalized,
-    context,
-    ...(notes.length > 0 ? { notes } : {}),
-  };
-}
-
-/**
- * Relay a revision back into the next pass.
- *
- * Same protocol rules apply: no invention, no omission, preserve lineage.
- */
-export function relayRevision(
-  payload: RelayPayload,
-  relayMode: RelayMode = "auto",
-): RelayResult {
-  const normalized = normalizePayload(payload);
-  const context = buildContext(relayMode);
-
-  return {
-    payload: normalized,
-    context,
-  };
+  return results;
 }

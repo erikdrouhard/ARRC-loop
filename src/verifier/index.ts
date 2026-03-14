@@ -1,340 +1,398 @@
 import type {
   ArrcInput,
-  StructuredChallenge,
+  EvidenceClass,
+  RelayedChallenge,
   VerificationResult,
-  VerificationStrategy,
 } from "../types.js";
+
+// --- Evidence Classification ---
+
+/**
+ * Classify the evidence class of text near a target span.
+ * "because", "therefore", "since" are EXPLANATORY, not material evidence.
+ */
+function classifyLocalEvidence(context: string): EvidenceClass {
+  // Tool-verified
+  if (/\b(?:tool output|verified by|validated by|automated check)\b/i.test(context)) {
+    return "tool-verified";
+  }
+  // Executable
+  if (/\b(?:test shows?|benchmark|experiment|audit confirms?|test results?)\b/i.test(context)) {
+    return "executable";
+  }
+  // Quantitative
+  if (/\b\d+(?:\.\d+)?%\b/.test(context) || /\bmeasured at\b/i.test(context)) {
+    return "quantitative";
+  }
+  // Citation-like
+  if (
+    /\bhttps?:\/\/\S+/.test(context) ||
+    /\b(?:according to|source:|citation:|study shows|data shows|confirmed by)\b/i.test(context)
+  ) {
+    return "citation-like";
+  }
+  // Explanatory (discourse markers — do NOT count as material evidence)
+  if (/\b(?:because|therefore|thus|hence|so|since|as a result|consequently)\b/i.test(context)) {
+    return "explanatory";
+  }
+  return "none";
+}
+
+function isMaterialEvidence(ec: EvidenceClass): boolean {
+  return ec === "citation-like" || ec === "quantitative" || ec === "executable" || ec === "tool-verified";
+}
 
 // --- Verification Strategies ---
 
 /**
- * Factual verification: inspect whether the targeted claim is supported inside the draft.
- * Does not decide universal truth unless grounded evidence exists.
+ * Factual verification: inspect whether the targeted claim is supported by material evidence.
+ * Discourse markers ("because") do NOT defeat a factual challenge.
  */
-const factualStrategy: VerificationStrategy = {
-  verify(challenge, draft, _context): VerificationResult {
-    const targetText = challenge.target.text;
+function verifyFactual(
+  challenge: RelayedChallenge,
+  draft: string,
+): VerificationResult {
+  const target = challenge.canonicalTarget.text;
 
-    // Check if target actually exists in draft
-    if (!draft.includes(targetText)) {
-      return {
-        accepted: false,
-        confidence: 0.9,
-        rationale: "Target text no longer present in draft. Challenge is stale.",
-      };
-    }
+  if (!draft.includes(challenge.canonicalTarget.text) &&
+      !draft.toLowerCase().includes(target.toLowerCase())) {
+    return {
+      accepted: false,
+      confidence: 0.9,
+      rationale: "Target text no longer present in draft.",
+      evidenceClass: "none",
+    };
+  }
 
-    // Look for evidence markers near the target
-    const evidencePatterns = [
-      /\b(according to|source|citation|evidence|because|study|data|measured|observed|tested|confirmed)\b/i,
-      /\bhttps?:\/\//i,
-      /\b\d+(\.\d+)?%\b/,
-    ];
+  // Get surrounding context for evidence check
+  const idx = draft.indexOf(challenge.canonicalTarget.text);
+  const realIdx = idx >= 0 ? idx : draft.toLowerCase().indexOf(target.toLowerCase());
+  const surrounding = draft.slice(
+    Math.max(0, realIdx - 200),
+    Math.min(draft.length, realIdx + target.length + 200),
+  );
 
-    const targetIndex = draft.indexOf(targetText);
-    const surroundingContext = draft.slice(
-      Math.max(0, targetIndex - 200),
-      Math.min(draft.length, targetIndex + targetText.length + 200),
-    );
+  const evClass = classifyLocalEvidence(surrounding);
 
-    const hasLocalEvidence = evidencePatterns.some((p) => p.test(surroundingContext));
+  if (isMaterialEvidence(evClass)) {
+    return {
+      accepted: false,
+      confidence: 0.75,
+      rationale: `Material evidence (${evClass}) found near target. Challenge does not hold locally.`,
+      evidenceClass: evClass,
+      evidence: `Evidence class: ${evClass}`,
+    };
+  }
 
-    if (hasLocalEvidence) {
-      return {
-        accepted: false,
-        confidence: 0.7,
-        rationale:
-          "The targeted claim has evidence markers in its vicinity. " +
-          "The challenge may still have merit, but local evidence reduces its signal.",
-        evidence: "Evidence markers found near target span.",
-      };
-    }
+  // Explanatory support does NOT defeat a factual challenge
+  if (evClass === "explanatory") {
+    return {
+      accepted: true,
+      confidence: 0.78,
+      rationale:
+        "Only explanatory discourse markers found near target (e.g., 'because'). " +
+        "These are not material evidence. Challenge holds.",
+      evidenceClass: evClass,
+      evidence: "Explanatory markers present but insufficient.",
+    };
+  }
 
-    // Absolute claim without evidence: accept the challenge
-    const absolutePattern = /\b(always|never|guarantee|must|every|none|impossible)\b/i;
-    if (absolutePattern.test(targetText)) {
+  // No evidence at all
+  return {
+    accepted: true,
+    confidence: 0.82,
+    rationale: "No evidence support found for the targeted claim. Challenge holds.",
+    evidenceClass: "none",
+  };
+}
+
+/**
+ * Logical verification: verify actual inferential gap.
+ * Does NOT require absolute language to accept.
+ */
+function verifyLogical(
+  challenge: RelayedChallenge,
+  draft: string,
+): VerificationResult {
+  const target = challenge.canonicalTarget.text;
+
+  if (!draft.includes(challenge.canonicalTarget.text) &&
+      !draft.toLowerCase().includes(target.toLowerCase())) {
+    return {
+      accepted: false,
+      confidence: 0.9,
+      rationale: "Target text no longer present in draft.",
+      evidenceClass: "none",
+    };
+  }
+
+  // Find the actual text in draft
+  const idx = draft.indexOf(challenge.canonicalTarget.text);
+  const actualText = idx >= 0
+    ? draft.slice(idx, idx + challenge.canonicalTarget.text.length)
+    : draft;
+
+  const singleReasonPattern = /\b(?:is|are|was|were|remains?)\s+\w+\s+(?:because|since)\b/i;
+  const multiReasonPattern = /\b(?:and also|additionally|furthermore|moreover|another reason|secondly|in addition)\b/i;
+  const hiddenPremisePattern = /\b(?:obviously|clearly|of course|naturally|inherently|by definition|self-evident)\b/i;
+
+  // Single-reason sufficiency
+  if (singleReasonPattern.test(actualText) && !multiReasonPattern.test(actualText)) {
+    return {
+      accepted: true,
+      confidence: 0.8,
+      rationale:
+        "Single-reason justification for broad conclusion. The inferential gap is real: " +
+        "the property typically depends on conditions beyond the single cited reason.",
+      evidenceClass: "none",
+      evidence: "Single causal chain without additional supporting reasons.",
+    };
+  }
+
+  // Hidden premise
+  if (hiddenPremisePattern.test(actualText)) {
+    return {
+      accepted: true,
+      confidence: 0.7,
+      rationale:
+        "Appeals to obviousness rather than argument. The hidden premise may not hold in all contexts.",
+      evidenceClass: "none",
+      evidence: "Hidden premise marker detected.",
+    };
+  }
+
+  // Causal connector present — moderate logical concern
+  if (/\b(?:because|since|therefore|thus|hence|so)\b/i.test(actualText)) {
+    // Check if conclusion outruns premise
+    const hasAbsoluteConclusion = /\b(?:always|never|must|guaranteed|impossible|certainly)\b/i.test(actualText);
+    if (hasAbsoluteConclusion) {
       return {
         accepted: true,
-        confidence: 0.8,
-        rationale:
-          "The targeted claim uses absolute language without local evidence support. " +
-          "The challenge is locally decision-relevant.",
-        evidence: "Absolute language detected without grounding.",
+        confidence: 0.75,
+        rationale: "Absolute conclusion from bounded premise. The conclusion's strength exceeds premise support.",
+        evidenceClass: "none",
       };
     }
 
-    // Moderate claim without evidence: accept with lower confidence
+    return {
+      accepted: true,
+      confidence: 0.6,
+      rationale: "Causal inference with potential gap. Severity is moderate.",
+      evidenceClass: "none",
+    };
+  }
+
+  return {
+    accepted: false,
+    confidence: 0.5,
+    rationale: "No clear inferential structure found for the counterargument to exploit.",
+    evidenceClass: "none",
+    abstained: true,
+  };
+}
+
+/**
+ * Schema verification: evaluate constructible counterexamples.
+ */
+function verifySchema(
+  challenge: RelayedChallenge,
+  draft: string,
+): VerificationResult {
+  if (!draft.includes(challenge.canonicalTarget.text)) {
+    return {
+      accepted: false,
+      confidence: 0.9,
+      rationale: "Target text no longer present in draft.",
+      evidenceClass: "none",
+    };
+  }
+
+  // Check if failure scenario describes constructible adversarial input
+  const constructiblePatterns = [
+    /\b(?:sends?|submit|input|pass|provide)\s/i,
+    /\{[^}]*\}/,
+    /\b(?:null|undefined|empty|"")\b/i,
+    /"[^"]*":\s*"?[^"]*"?/,
+  ];
+
+  const hasConstructible = constructiblePatterns.some((p) =>
+    p.test(challenge.failureScenario),
+  );
+
+  if (hasConstructible) {
+    return {
+      accepted: true,
+      confidence: 0.85,
+      rationale: "Constructible adversarial input can break the schema or bypass its constraints.",
+      evidenceClass: "executable",
+      evidence: `Constructible case: ${challenge.failureScenario.slice(0, 120)}`,
+    };
+  }
+
+  return {
+    accepted: false,
+    confidence: 0.4,
+    rationale: "No concretely constructible adversarial input in failure scenario.",
+    evidenceClass: "none",
+    abstained: true,
+  };
+}
+
+/**
+ * Persona verification: compare against persona contract.
+ * If no contract exists, verify that persona durability is underspecified.
+ */
+function verifyPersona(
+  challenge: RelayedChallenge,
+  draft: string,
+): VerificationResult {
+  if (!draft.includes(challenge.canonicalTarget.text)) {
+    return {
+      accepted: false,
+      confidence: 0.9,
+      rationale: "Target text no longer present in draft.",
+      evidenceClass: "none",
+    };
+  }
+
+  const personaElements = /\b(?:voice|tone|character|persona|boundary|identity|role|style)\b/i;
+  const hasSomePersona = personaElements.test(draft);
+
+  if (!hasSomePersona) {
+    return {
+      accepted: true,
+      confidence: 0.75,
+      rationale: "No persona contract found. Persona durability is underspecified.",
+      evidenceClass: "none",
+    };
+  }
+
+  // Has some persona elements — check for boundary constraints
+  const boundaryElements = /\b(?:never|refuse|will not|cannot|must not|won't)\b/i;
+  if (!boundaryElements.test(draft)) {
+    return {
+      accepted: true,
+      confidence: 0.7,
+      rationale: "Persona traits mentioned but no refusal boundaries defined. Vulnerable to erosion.",
+      evidenceClass: "none",
+    };
+  }
+
+  // Check for contradictions
+  if (/\b(?:but|however|although|except|unless)\b/i.test(challenge.canonicalTarget.text)) {
     return {
       accepted: true,
       confidence: 0.65,
-      rationale:
-        "The targeted claim lacks evidence markers. The challenge identifies a real " +
-        "grounding gap that could affect decision-making.",
+      rationale: "Contradictory persona clause detected. Adversary can exploit the ambiguity.",
+      evidenceClass: "none",
     };
-  },
-};
+  }
+
+  return {
+    accepted: false,
+    confidence: 0.6,
+    rationale: "Persona contract with traits and boundaries appears adequate.",
+    evidenceClass: "none",
+  };
+}
 
 /**
- * Logical verification: inspect premise → conclusion structure around the target span.
- * Determines whether the counterargument exposes a real inferential gap.
+ * Policy verification: check allow/deny/escalate completeness.
+ * Rejects repairs that are merely placeholders.
  */
-const logicalStrategy: VerificationStrategy = {
-  verify(challenge, draft, _context): VerificationResult {
-    const targetText = challenge.target.text;
+function verifyPolicy(
+  challenge: RelayedChallenge,
+  draft: string,
+): VerificationResult {
+  if (!draft.includes(challenge.canonicalTarget.text)) {
+    return {
+      accepted: false,
+      confidence: 0.9,
+      rationale: "Target text no longer present in draft.",
+      evidenceClass: "none",
+    };
+  }
 
-    if (!draft.includes(targetText)) {
-      return {
-        accepted: false,
-        confidence: 0.9,
-        rationale: "Target text no longer present in draft.",
-      };
-    }
+  // Check for complete policy boundaries in FULL document
+  const hasAllow = /\b(?:allowed|permit|can|accept|approve)\b/i.test(draft);
+  const hasDeny = /\b(?:not allowed|forbidden|refuse|deny|reject|prohibit|block)\b/i.test(draft);
+  const hasEscalate = /\b(?:escalate|refer|forward|hand off|human review|manual)\b/i.test(draft);
 
-    // Check for single-reason pattern (X because Y, with no additional reasons)
-    const singleReasonPattern = /\b(is|are|was|were)\s+\w+\s+because\b/i;
-    const multiReasonPattern = /\b(and|also|additionally|furthermore|moreover)\b/i;
+  const missingCount = [hasAllow, hasDeny, hasEscalate].filter((v) => !v).length;
 
-    const hasSingleReason = singleReasonPattern.test(targetText);
-    const hasMultipleReasons = multiReasonPattern.test(targetText);
+  if (missingCount >= 2) {
+    return {
+      accepted: true,
+      confidence: 0.85,
+      rationale: "Multiple boundary types missing from policy specification.",
+      evidenceClass: "none",
+      evidence: `Missing: ${[!hasAllow && "allow", !hasDeny && "deny", !hasEscalate && "escalate"].filter(Boolean).join(", ")}`,
+    };
+  }
 
-    if (hasSingleReason && !hasMultipleReasons) {
+  // Check for vague language in the TARGET SPAN specifically
+  const vaguePattern = /\b(?:may be|in some cases|special cases|when appropriate|as needed|discretion)\b/i;
+  if (vaguePattern.test(challenge.canonicalTarget.text)) {
+    // Check if it's been "fixed" with a placeholder — that doesn't count
+    const placeholderPattern = /\b(?:criteria to be specified|details TBD|appropriate safeguards|to be determined)\b/i;
+    if (placeholderPattern.test(draft)) {
       return {
         accepted: true,
         confidence: 0.8,
-        rationale:
-          "The target presents a single-reason justification for a broad conclusion. " +
-          "The counterargument correctly identifies this as an inferential gap.",
-        evidence: "Single causal chain without additional supporting reasons.",
-      };
-    }
-
-    // Causal connector with absolute conclusion
-    const causalPattern = /\b(because|therefore|thus|hence|so|since)\b/i;
-    const absolutePattern = /\b(always|never|must|guaranteed|impossible|certain)\b/i;
-
-    if (causalPattern.test(targetText) && absolutePattern.test(targetText)) {
-      return {
-        accepted: true,
-        confidence: 0.75,
-        rationale:
-          "The target draws an absolute conclusion from a causal chain. " +
-          "The inferential gap between premise and absolute conclusion is real.",
-      };
-    }
-
-    if (causalPattern.test(targetText)) {
-      return {
-        accepted: true,
-        confidence: 0.6,
-        rationale:
-          "The target contains a causal inference. The counterargument identifies a " +
-          "potential gap, though the severity is moderate.",
-      };
-    }
-
-    // No clear inferential structure found
-    return {
-      accepted: false,
-      confidence: 0.5,
-      rationale:
-        "The target does not contain a clear inferential structure that the " +
-        "counterargument can exploit.",
-      abstained: true,
-    };
-  },
-};
-
-/**
- * Schema verification: attempt adversarial construction against the schema.
- * If a constructible failure case exists, accept.
- */
-const schemaStrategy: VerificationStrategy = {
-  verify(challenge, draft, _context): VerificationResult {
-    const targetText = challenge.target.text;
-
-    if (!draft.includes(targetText)) {
-      return {
-        accepted: false,
-        confidence: 0.9,
-        rationale: "Target text no longer present in draft.",
-      };
-    }
-
-    // Check if failure scenario describes a constructible case
-    const constructiblePatterns = [
-      /\b(sends?|submit|input|pass|provide)\s/i,
-      /\{[^}]*\}/,
-      /\b(null|undefined|empty|"")\b/i,
-    ];
-
-    const hasConstructibleCase = constructiblePatterns.some((p) =>
-      p.test(challenge.failureScenario),
-    );
-
-    if (hasConstructibleCase) {
-      return {
-        accepted: true,
-        confidence: 0.85,
-        rationale:
-          "The failure scenario describes a constructible adversarial input " +
-          "that could break the schema or bypass its constraints.",
-        evidence: `Constructible failure case: ${challenge.failureScenario.slice(0, 100)}`,
-      };
-    }
-
-    // Schema challenge without constructible case: abstain
-    return {
-      accepted: false,
-      confidence: 0.4,
-      rationale:
-        "The challenge targets schema design but the failure scenario does not describe " +
-        "a concretely constructible adversarial input.",
-      abstained: true,
-    };
-  },
-};
-
-/**
- * Persona verification: compare targeted span against explicit persona traits or voice constraints.
- */
-const personaStrategy: VerificationStrategy = {
-  verify(challenge, draft, _context): VerificationResult {
-    const targetText = challenge.target.text;
-
-    if (!draft.includes(targetText)) {
-      return {
-        accepted: false,
-        confidence: 0.9,
-        rationale: "Target text no longer present in draft.",
-      };
-    }
-
-    // Check if draft actually defines persona elements
-    const personaElements = /\b(voice|tone|character|persona|boundary|identity|role|style)\b/i;
-    const hasSomePersona = personaElements.test(draft);
-
-    if (!hasSomePersona) {
-      return {
-        accepted: true,
-        confidence: 0.75,
-        rationale:
-          "The draft contains no explicit persona trait definitions. " +
-          "The challenge correctly identifies a durability vulnerability.",
-      };
-    }
-
-    // Has some persona elements but boundaries may be weak
-    const boundaryElements = /\b(never|refuse|will not|cannot|must not|won't)\b/i;
-    if (!boundaryElements.test(draft)) {
-      return {
-        accepted: true,
-        confidence: 0.7,
-        rationale:
-          "Persona traits are mentioned but no explicit refusal boundaries are defined. " +
-          "The persona is vulnerable to erosion under persistent pressure.",
+        rationale: "Vague boundary was 'fixed' with placeholder text, which is not a real repair.",
+        evidenceClass: "none",
+        evidence: "Placeholder repair detected.",
       };
     }
 
     return {
-      accepted: false,
-      confidence: 0.6,
-      rationale:
-        "The draft contains both persona trait definitions and boundary constraints. " +
-        "The current persona specification may be sufficient.",
+      accepted: true,
+      confidence: 0.8,
+      rationale: "Vague boundary language leaves policy open to interpretation under pressure.",
+      evidenceClass: "none",
+      evidence: `Vague term: "${challenge.canonicalTarget.text.slice(0, 80)}"`,
     };
-  },
-};
+  }
 
-/**
- * Policy verification: inspect allow/deny/escalate language.
- * Accept if the challenged boundary is genuinely missing or ambiguous.
- */
-const policyStrategy: VerificationStrategy = {
-  verify(challenge, draft, _context): VerificationResult {
-    const targetText = challenge.target.text;
-
-    if (!draft.includes(targetText)) {
-      return {
-        accepted: false,
-        confidence: 0.9,
-        rationale: "Target text no longer present in draft.",
-      };
-    }
-
-    // Check for complete policy boundaries
-    const hasAllow = /\b(allowed|permit|can|may|accept|approve)\b/i.test(draft);
-    const hasDeny = /\b(not allowed|forbidden|refuse|deny|reject|prohibit|block)\b/i.test(draft);
-    const hasEscalate = /\b(escalate|refer|forward|hand off|human review|manual)\b/i.test(draft);
-
-    const missingCount = [hasAllow, hasDeny, hasEscalate].filter((v) => !v).length;
-
-    if (missingCount >= 2) {
-      return {
-        accepted: true,
-        confidence: 0.85,
-        rationale:
-          "The policy is missing multiple boundary types (allow/deny/escalate). " +
-          "The challenge correctly identifies a genuine gap in policy specification.",
-        evidence: `Missing: ${[!hasAllow && "allow", !hasDeny && "deny", !hasEscalate && "escalate"].filter(Boolean).join(", ")}`,
-      };
-    }
-
-    // Check for vague language in the target
-    const vaguePattern = /\b(may be|in some cases|special cases|when appropriate|as needed|discretion)\b/i;
-    if (vaguePattern.test(targetText)) {
-      return {
-        accepted: true,
-        confidence: 0.8,
-        rationale:
-          "The target span contains vague boundary language that leaves the policy " +
-          "open to interpretation under adversarial pressure.",
-        evidence: `Vague boundary language: "${targetText.slice(0, 80)}"`,
-      };
-    }
-
-    if (missingCount === 1) {
-      return {
-        accepted: true,
-        confidence: 0.65,
-        rationale:
-          "The policy is missing one boundary type. While partially specified, " +
-          "the gap could be exploited under pressure.",
-      };
-    }
-
+  if (missingCount === 1) {
     return {
-      accepted: false,
-      confidence: 0.6,
-      rationale:
-        "The policy appears to define allow, deny, and escalate boundaries. " +
-        "The current specification may be adequate.",
+      accepted: true,
+      confidence: 0.65,
+      rationale: "One policy boundary type missing.",
+      evidenceClass: "none",
     };
-  },
-};
+  }
+
+  return {
+    accepted: false,
+    confidence: 0.6,
+    rationale: "Policy appears to define allow, deny, and escalate boundaries.",
+    evidenceClass: "none",
+  };
+}
 
 // --- Strategy Registry ---
 
-const STRATEGIES: Record<string, VerificationStrategy> = {
-  factual: factualStrategy,
-  logical: logicalStrategy,
-  schema: schemaStrategy,
-  persona: personaStrategy,
-  policy: policyStrategy,
+type VerifyFn = (challenge: RelayedChallenge, draft: string) => VerificationResult;
+
+const STRATEGIES: Record<string, VerifyFn> = {
+  factual: verifyFactual,
+  logical: verifyLogical,
+  schema: verifySchema,
+  persona: verifyPersona,
+  policy: verifyPolicy,
 };
 
 /**
- * Verify a set of challenges against the draft.
+ * Verify a set of relayed challenges against the draft.
  *
- * Each challenge is verified using a dimension-specific strategy.
- * The verifier determines whether each challenge is locally valid.
- *
- * Local-contract rule: the verifier must not accept weak or borderline challenges
- * assuming later modules will safely absorb the error.
+ * IMPORTANT: Takes RelayedChallenge[], not raw challenges.
+ * The relay must process challenges before they reach the verifier.
  */
 export function verifyChallenges(
-  challenges: StructuredChallenge[],
+  challenges: RelayedChallenge[],
   draft: string,
-  context: ArrcInput,
+  _context: ArrcInput,
 ): VerificationResult[] {
   return challenges.map((challenge) => {
     const strategy = STRATEGIES[challenge.category];
@@ -343,10 +401,10 @@ export function verifyChallenges(
         accepted: false,
         confidence: 0.3,
         rationale: `No verification strategy for category "${challenge.category}".`,
+        evidenceClass: "none" as EvidenceClass,
         abstained: true,
       };
     }
-
-    return strategy.verify(challenge, draft, context);
+    return strategy(challenge, draft);
   });
 }

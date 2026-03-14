@@ -1,49 +1,67 @@
-import type { ArrcInput, DraftSpan, StructuredChallenge } from "../types.js";
-import { findSpan, isAdmissible, makeId } from "./util.js";
+import type { ArrcInput } from "../types.js";
+import { splitSentences, findSpan } from "../util.js";
+import type { RawChallenge } from "./util.js";
+import { isAdmissible } from "./util.js";
 
 const ABSOLUTE_CLAIM_PATTERN =
   /\b(always|never|guarantee(?:d|s)?|definitely|certainly|impossible|must|every|none)\b/i;
 
-const UNGROUNDED_CLAIM_PATTERN =
+const UNGROUNDED_PATTERN =
   /\b(is|are|was|were|will|does|do)\s+(always|never|the only|the best|guaranteed|certain)\b/i;
 
 /**
- * Factual challenger: targets claims that assert facts without grounding.
- *
- * Local-contract rule: must not emit weak challenges assuming the verifier will filter.
- * If a concrete counterargument cannot be formed, abstain.
+ * Material evidence patterns — things that could actually ground a claim.
+ * "because", "since", "therefore" are NOT evidence.
+ */
+const MATERIAL_EVIDENCE_NEARBY =
+  /(?:\bhttps?:\/\/\S+|\b(?:according to|source:|citation:|study|data shows|measured|observed|tested|confirmed by)\b|\b\d+(?:\.\d+)?%\b)/i;
+
+/**
+ * Factual challenger: targets unsupported certainty, unsupported universals,
+ * and claims lacking cited or testable support.
  */
 export function generateFactualChallenges(
   draft: string,
   _input: ArrcInput,
-): StructuredChallenge[] {
-  const challenges: StructuredChallenge[] = [];
-  const sentences = draft.split(/(?<=[.!?])\s+/);
+): RawChallenge[] {
+  const challenges: RawChallenge[] = [];
+  const sentences = splitSentences(draft);
 
   for (const sentence of sentences) {
     const absoluteMatch = sentence.match(ABSOLUTE_CLAIM_PATTERN);
-    const ungroundedMatch = sentence.match(UNGROUNDED_CLAIM_PATTERN);
+    const ungroundedMatch = sentence.match(UNGROUNDED_PATTERN);
 
     if (!absoluteMatch && !ungroundedMatch) continue;
 
     const span = findSpan(draft, sentence.trim());
     if (!span) continue;
 
+    // Check for material evidence near target (not discourse markers)
+    const targetIndex = draft.indexOf(sentence.trim());
+    const context = draft.slice(
+      Math.max(0, targetIndex - 200),
+      Math.min(draft.length, targetIndex + sentence.length + 200),
+    );
+    const hasMaterialEvidence = MATERIAL_EVIDENCE_NEARBY.test(context);
+
+    if (hasMaterialEvidence) continue; // grounded claim, skip
+
     const matchedTerm = absoluteMatch?.[1] ?? ungroundedMatch?.[2] ?? "";
+
     const counterargument =
-      `The claim "${sentence.trim()}" uses "${matchedTerm}" without citing evidence. ` +
-      `Real-world systems exhibit exceptions — error states, edge cases, or environmental variation ` +
-      `can produce outcomes contradicting this absolute assertion.`;
+      `The claim "${sentence.trim()}" uses "${matchedTerm}" without cited evidence, ` +
+      `quantitative data, or testable support. Discourse markers like "because" do not ` +
+      `constitute evidence. Real-world systems exhibit exceptions that can contradict ` +
+      `this assertion.`;
 
     const failureScenario =
-      `A consumer trusts this claim literally. When an exception occurs ` +
-      `(e.g., network timeout, malformed input, unexpected state), the system behavior ` +
-      `contradicts the stated guarantee, causing silent failure or incorrect downstream decisions.`;
+      `A consumer trusts this claim literally. An exception occurs ` +
+      `(e.g., network timeout, malformed input, unexpected state) that contradicts ` +
+      `the stated guarantee, causing silent failure or incorrect downstream decisions.`;
 
-    const challenge: StructuredChallenge = {
-      id: makeId("factual", span),
-      issueKey: `factual:${matchedTerm.toLowerCase()}:${span.start}`,
+    const c: RawChallenge = {
       category: "factual",
+      subtype: "unsupported-certainty",
       severity: "medium",
       target: span,
       counterargument,
@@ -51,8 +69,8 @@ export function generateFactualChallenges(
       signal: 0.82,
     };
 
-    if (isAdmissible(challenge)) {
-      challenges.push(challenge);
+    if (isAdmissible(c)) {
+      challenges.push(c);
     }
   }
 
