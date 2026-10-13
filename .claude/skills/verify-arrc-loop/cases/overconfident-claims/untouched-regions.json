@@ -1,0 +1,4 @@
+{ "feature": "overconfident-claims", "name": "untouched-regions",
+  "input": { "draft": "Deploys always succeed. The changelog is in docs/CHANGES.md.", "metadata": { "highStakes": true } },
+  "expect": { "decision": "narrow", "shouldShip": true,
+              "output": "Deploys usually succeed. The changelog is in docs/CHANGES.md." } }

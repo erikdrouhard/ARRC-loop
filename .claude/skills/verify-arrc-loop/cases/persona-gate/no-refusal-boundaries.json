@@ -1,0 +1,5 @@
+{ "feature": "persona-gate", "name": "no-refusal-boundaries",
+  "input": { "draft": "I can answer as the brand voice, but the persona constraints are not written down yet.", "taskType": "persona", "metadata": { "requiresPersonaDurability": true } },
+  "expect": { "decision": "revise", "shouldShip": false, "tier": 3,
+              "output": "I can answer as the brand voice, but the persona constraints are not written down yet.",
+              "reasonsInclude": ["persona:missing-boundaries"] } }

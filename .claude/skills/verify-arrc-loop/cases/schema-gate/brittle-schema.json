@@ -1,0 +1,5 @@
+{ "feature": "schema-gate", "name": "brittle-schema",
+  "input": { "draft": "Return an object for the form submission with whatever fields seem useful.", "taskType": "schema", "metadata": { "hasStrictSchema": true } },
+  "expect": { "decision": "escalate", "shouldShip": false, "tier": 3,
+              "output": "Return an object for the form submission with whatever fields seem useful.",
+              "reasonsInclude": ["schema:missing-required-constraints", "schema:missing-type-constraints"] } }

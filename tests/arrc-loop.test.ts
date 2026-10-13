@@ -377,6 +377,48 @@ describe("runARRC", () => {
     expect(result.coverage.admissibleChallengesProduced).toBeGreaterThanOrEqual(1);
   });
 
+  it("narrows the README quick-start draft once the scoped revision holds", () => {
+    const result = runARRC({
+      draft: "The API always returns JSON and never fails silently.",
+      taskType: "reasoning",
+      maxRounds: 2,
+      metadata: { highStakes: true },
+    });
+
+    expect(result.decision).toBe("narrow");
+    expect(result.shouldShip).toBe(true);
+    expect(result.output).toBe("The API usually returns JSON and rarely fails silently.");
+    expect(result.coverage.coverageAdequate).toBe(true);
+    expect(result.coverage.dimensionsAbstained).toEqual([]);
+    expect(result.coverage.dimensionsAttempted).toContain("factual");
+  });
+
+  it("does not count a cleared re-challenge as abstention", () => {
+    const result = runARRC({
+      draft: "Deploys always succeed. The changelog is in docs/CHANGES.md.",
+      metadata: { highStakes: true },
+    });
+
+    expect(result.rounds).toHaveLength(2);
+    expect(result.rounds[1]?.challenges).toHaveLength(0);
+    expect(result.coverage.dimensionsAbstained).toEqual([]);
+    expect(result.coverage.coverageNotes.some((n) => n.includes("Scoped revisions held"))).toBe(true);
+    expect(result.decision).toBe("narrow");
+    expect(result.output).toBe("Deploys usually succeed. The changelog is in docs/CHANGES.md.");
+  });
+
+  it("still escalates when a flagged dimension abstains in the first sweep", () => {
+    const result = runARRC({
+      draft: 'Schema: field "email" is required, type string, format email. Invalid input returns error 400.',
+      taskType: "schema",
+      metadata: { hasStrictSchema: true },
+    });
+
+    expect(result.coverage.dimensionsAbstained).toContain("schema");
+    expect(result.decision).toBe("escalate");
+    expect(result.shouldShip).toBe(false);
+  });
+
   it("escalates brittle schema drafts at tier 3", () => {
     const result = runARRC({
       draft: "Return a flexible object with any fields that seem right.",

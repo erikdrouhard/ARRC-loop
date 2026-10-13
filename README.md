@@ -205,7 +205,7 @@ arrc-loop/
 
 ## Status
 
-v1 runtime implemented. 22 tests passing across classifier, challengers, verifier, reviser, resolver, and full loop integration.
+v1 runtime implemented. 25 tests passing across classifier, challengers, verifier, reviser, resolver, and full loop integration.
 
 The core runtime is **deterministic by default** with clean interfaces for future:
 - model-backed challengers
