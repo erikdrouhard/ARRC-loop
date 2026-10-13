@@ -68,6 +68,7 @@ function normalizeInput(
 function buildCoverage(
   flaggedDimensions: ArrcChallengeCategory[],
   abstainedDimensions: ArrcChallengeCategory[],
+  clearedDimensions: ArrcChallengeCategory[],
   rounds: ArrcRound[],
 ): ChallengeCoverage {
   const admissibleCount = rounds.reduce((sum, r) => sum + r.challenges.length, 0);
@@ -86,6 +87,13 @@ function buildCoverage(
     coverageNotes.push(
       `Abstained on dimensions: ${abstainedDimensions.join(", ")}. ` +
         "Challenger could not produce concrete challenges for these.",
+    );
+  }
+
+  if (clearedDimensions.length > 0) {
+    coverageNotes.push(
+      `Re-challenge of revised dimensions produced no admissible challenges: ${clearedDimensions.join(", ")}. ` +
+        "Scoped revisions held.",
     );
   }
 
@@ -203,7 +211,11 @@ export function runARRC(input: ArrcInput): ArrcResult {
 
   let currentDraft = normalized.draft;
   const rounds: ArrcRound[] = [];
-  let allAbstainedDimensions: ArrcChallengeCategory[] = [];
+  // Abstention is judged on the round-1 sweep over every flagged dimension.
+  // In round 2+, a re-challenged dimension that yields nothing means the scoped
+  // revision held; counting that as abstention would make "narrow" unreachable.
+  let abstainedDimensions: ArrcChallengeCategory[] = [];
+  const clearedDimensions = new Set<ArrcChallengeCategory>();
 
   for (let roundNum = 1; roundNum <= maxRounds; roundNum += 1) {
     // Determine which dimensions to challenge this round
@@ -237,12 +249,15 @@ export function runARRC(input: ArrcInput): ArrcResult {
     }
 
     // Generate challenges
-    const { challenges, abstainedDimensions } = generateChallenges(
-      currentDraft,
-      normalized,
-      dimensionsToChallenge,
-    );
-    allAbstainedDimensions = [...new Set([...allAbstainedDimensions, ...abstainedDimensions])];
+    const generated = generateChallenges(currentDraft, normalized, dimensionsToChallenge);
+    const { challenges } = generated;
+    if (roundNum === 1) {
+      abstainedDimensions = generated.abstainedDimensions;
+    } else {
+      for (const dimension of generated.abstainedDimensions) {
+        clearedDimensions.add(dimension);
+      }
+    }
 
     // Relay challenges (preserve protocol constraints)
     for (const challenge of challenges) {
@@ -297,7 +312,8 @@ export function runARRC(input: ArrcInput): ArrcResult {
   // Build coverage
   const coverage = buildCoverage(
     assessment.flaggedDimensions,
-    allAbstainedDimensions,
+    abstainedDimensions,
+    [...clearedDimensions],
     rounds,
   );
 

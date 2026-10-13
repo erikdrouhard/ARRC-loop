@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# arrc-verify — drive the packed arrc-loop package the way a consumer does.
+#
+#   arrc-verify launch                 build, npm pack, install the tarball into a scratch consumer
+#   arrc-verify doctor                 read-only: is the current run worth driving?
+#   arrc-verify drive <case.json>...   run cases through `import { runARRC } from "arrc-loop"`
+#   arrc-verify cleanup                remove the scratch consumer; keep evidence
+#
+# The run is selected by ARRC_VERIFY_RUN_ID, else the last `launch` (artifacts/verify-arrc-loop/.current-run).
+set -euo pipefail
+
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO="$(cd "$SKILL_DIR/../../.." && pwd)"
+ARTIFACT_ROOT="$REPO/artifacts/verify-arrc-loop"
+SCRATCH_BASE="${TMPDIR:-/tmp}"
+
+die() { echo "FAIL $*" >&2; exit 1; }
+
+current_run() {
+  local id="${ARRC_VERIFY_RUN_ID:-}"
+  if [[ -z "$id" && -f "$ARTIFACT_ROOT/.current-run" ]]; then id="$(cat "$ARTIFACT_ROOT/.current-run")"; fi
+  [[ -n "$id" ]] || die "no run selected; run 'arrc-verify launch' first"
+  echo "$id"
+}
+
+src_fingerprint() {
+  # Changes to src/ or package.json after launch make the installed package stale.
+  (cd "$REPO" && { git rev-parse HEAD; git diff HEAD -- src package.json tsup.config.ts; git ls-files --others --exclude-standard src; } | sha256sum | cut -d' ' -f1)
+}
+
+cmd_launch() {
+  local id="${ARRC_VERIFY_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
+  local run_dir="$SCRATCH_BASE/arrc-verify-$id"
+  local evid="$ARTIFACT_ROOT/$id"
+  [[ ! -e "$run_dir" ]] || die "run dir already exists: $run_dir"
+  mkdir -p "$run_dir/consumer" "$evid"
+
+  (cd "$REPO" && { [[ -d node_modules ]] || npm ci --no-audit --no-fund >/dev/null; } && npm run build >"$evid/build.log" 2>&1) \
+    || die "build failed; see $evid/build.log"
+  local tgz
+  tgz="$(cd "$REPO" && npm pack --silent --pack-destination "$run_dir")"
+  cat >"$run_dir/consumer/package.json" <<'JSON'
+{ "name": "arrc-verify-consumer", "private": true, "type": "module" }
+JSON
+  (cd "$run_dir/consumer" && npm install --no-audit --no-fund --prefer-offline "$run_dir/$tgz" >"$evid/install.log" 2>&1) \
+    || die "install of $tgz failed; see $evid/install.log"
+  cp "$SKILL_DIR/scripts/drive.mjs" "$run_dir/consumer/drive.mjs"
+
+  cat >"$run_dir/state.env" <<EOF
+RUN_ID=$id
+TARBALL=$run_dir/$tgz
+TARBALL_SHA=$(sha256sum "$run_dir/$tgz" | cut -d' ' -f1)
+REPO_VERSION=$(node -p "require('$REPO/package.json').version")
+SRC_FINGERPRINT=$(src_fingerprint)
+GIT_REV=$(cd "$REPO" && git rev-parse --short HEAD)
+EOF
+  cp "$run_dir/state.env" "$evid/state.env"
+  echo "$id" >"$ARTIFACT_ROOT/.current-run"
+  echo "READY run=$id consumer=$run_dir/consumer evidence=$evid"
+}
+
+cmd_doctor() {
+  local id run_dir ok=0
+  id="$(current_run)"; run_dir="$SCRATCH_BASE/arrc-verify-$id"
+  [[ -f "$run_dir/state.env" ]] || die "run $id has no scratch dir ($run_dir); launch again"
+  # shellcheck disable=SC1091
+  source "$run_dir/state.env"
+  local installed="$run_dir/consumer/node_modules/arrc-loop/package.json"
+  check() { if eval "$2"; then echo "OK   $1"; else echo "FAIL $1"; ok=1; fi; }
+  check "run $id was launched by arrc-verify (state.env present)" "true"
+  check "tarball unchanged ($TARBALL)" "[[ \$(sha256sum '$TARBALL' | cut -d' ' -f1) == '$TARBALL_SHA' ]]"
+  check "installed arrc-loop is v$REPO_VERSION" "[[ -f '$installed' && \$(node -p \"require('$installed').version\") == '$REPO_VERSION' ]]"
+  check "src/ unchanged since launch (else relaunch: installed package is stale)" "[[ \$(src_fingerprint) == '$SRC_FINGERPRINT' ]]"
+  check "consumer resolves 'arrc-loop' and exports runARRC" \
+    "(cd '$run_dir/consumer' && node --input-type=module -e \"import('arrc-loop').then(m=>process.exit(typeof m.runARRC==='function'?0:1))\")"
+  return $ok
+}
+
+cmd_drive() {
+  [[ $# -gt 0 ]] || die "usage: arrc-verify drive <case.json>..."
+  local id run_dir evid
+  id="$(current_run)"; run_dir="$SCRATCH_BASE/arrc-verify-$id"; evid="$ARTIFACT_ROOT/$id"
+  [[ -d "$run_dir/consumer" ]] || die "run $id has no consumer; launch again"
+  local rc=0 f abs
+  for f in "$@"; do
+    abs="$(cd "$(dirname "$f")" && pwd)/$(basename "$f")"
+    (cd "$run_dir/consumer" && node drive.mjs "$abs" "$evid") || rc=1
+  done
+  return $rc
+}
+
+cmd_cleanup() {
+  local id run_dir
+  id="$(current_run)"; run_dir="$SCRATCH_BASE/arrc-verify-$id"
+  # Only remove the scratch dir this tool created for this run id.
+  if [[ -f "$run_dir/state.env" ]]; then rm -rf "$run_dir"; echo "removed $run_dir"; else echo "nothing to remove at $run_dir"; fi
+  echo "evidence kept at $ARTIFACT_ROOT/$id"
+}
+
+case "${1:-}" in
+  launch) shift; cmd_launch "$@" ;;
+  doctor) shift; cmd_doctor "$@" ;;
+  drive) shift; cmd_drive "$@" ;;
+  cleanup) shift; cmd_cleanup "$@" ;;
+  *) sed -n '2,9p' "$0"; exit 2 ;;
+esac

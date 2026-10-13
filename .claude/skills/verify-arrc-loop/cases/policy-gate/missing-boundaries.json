@@ -1,0 +1,4 @@
+{ "feature": "policy-gate", "name": "missing-boundaries",
+  "input": { "draft": "We should help where we can.", "taskType": "policy", "metadata": { "highStakes": true, "userRequestedVerification": true } },
+  "expect": { "decision": "escalate", "shouldShip": false, "tier": 3, "dimensionsAttemptedInclude": ["policy"],
+              "reasonsInclude": ["policy:missing-boundaries"] } }

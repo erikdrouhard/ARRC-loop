@@ -1,0 +1,5 @@
+{ "feature": "overconfident-claims", "name": "readme-quickstart",
+  "input": { "draft": "The API always returns JSON and never fails silently.", "taskType": "reasoning", "maxRounds": 2, "metadata": { "highStakes": true } },
+  "expect": { "decision": "narrow", "shouldShip": true, "coverageAdequate": true,
+              "output": "The API usually returns JSON and rarely fails silently.",
+              "dimensionsAttemptedInclude": ["factual"], "reasonsExclude": ["Abstained on dimensions"] } }

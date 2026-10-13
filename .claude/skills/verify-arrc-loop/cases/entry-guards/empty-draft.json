@@ -1,0 +1,3 @@
+{ "feature": "entry-guards", "name": "empty-draft",
+  "input": { "draft": "   " },
+  "expect": { "decision": "reject", "shouldShip": false, "rounds": 0 } }

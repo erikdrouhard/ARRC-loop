@@ -1,0 +1,3 @@
+{ "feature": "entry-guards", "name": "low-risk-bypass",
+  "input": { "draft": "Thanks, I updated the formatting." },
+  "expect": { "decision": "approve", "shouldShip": true, "tier": 0, "rounds": 0, "output": "Thanks, I updated the formatting." } }
